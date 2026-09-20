@@ -1,0 +1,20 @@
+//@version=6
+strategy("RSI Mean Reversion", overlay=false)
+
+rsiLength  = input.int(14, "RSI Length")
+oversold   = input.int(30, "Oversold Level")
+overbought = input.int(70, "Overbought Level")
+
+rsiVal = ta.rsi(close, rsiLength)
+
+plot(rsiVal, "RSI", color=color.new(#7E57C2, 0), linewidth=2)
+h1 = hline(70, "Overbought", color=color.red, linestyle=hline.style_dashed)
+h2 = hline(30, "Oversold", color=color.green, linestyle=hline.style_dashed)
+fill(h1, h2, color=color.new(#7E57C2, 90))
+
+// Execution logic
+if (ta.crossover(rsiVal, oversold))
+    strategy.entry("RSI Long", strategy.long)
+
+if (ta.crossunder(rsiVal, overbought))
+    strategy.close("RSI Long", comment="Overbought Exit")

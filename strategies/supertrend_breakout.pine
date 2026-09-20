@@ -1,0 +1,17 @@
+//@version=6
+strategy("Supertrend Strategy", overlay=true)
+
+atrPeriod  = input.int(10, "ATR Period")
+multiplier = input.float(3.0, "Multiplier", step=0.1)
+
+[superTrend, direction] = ta.supertrend(multiplier, atrPeriod)
+
+plot(direction < 0 ? superTrend : na, "Up Trend", color=color.green, style=plot.style_linebr)
+plot(direction > 0 ? superTrend : na, "Down Trend", color=color.red, style=plot.style_linebr)
+
+// Strategy Entries
+if (ta.change(direction) and direction < 0)
+    strategy.entry("ST Long", strategy.long)
+
+if (ta.change(direction) and direction > 0)
+    strategy.entry("ST Short", strategy.short)

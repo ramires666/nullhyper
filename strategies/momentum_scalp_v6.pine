@@ -1,0 +1,13 @@
+//@version=6
+strategy("Momentum Scalp V6", overlay=true)
+
+fast = ta.ema(close, 7)
+slow = ta.ema(close, 25)
+
+plot(fast, "Fast EMA", color=color.yellow)
+plot(slow, "Slow EMA", color=color.purple)
+
+if ta.crossover(fast, slow)
+    strategy.entry("Long", strategy.long)
+if ta.crossunder(fast, slow)
+    strategy.close("Long")

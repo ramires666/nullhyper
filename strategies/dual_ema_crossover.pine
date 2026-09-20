@@ -1,0 +1,33 @@
+//@version=6
+strategy("Dual EMA Crossover Strategy", overlay=true, margin_long=100, margin_short=100)
+
+// Inputs
+fastLength = input.int(9, "Fast EMA Length", minval=1)
+slowLength = input.int(21, "Slow EMA Length", minval=1)
+slPercent  = input.float(1.5, "Stop Loss %", minval=0.1)
+tpPercent  = input.float(3.0, "Take Profit %", minval=0.1)
+
+// Indicators
+fastEMA = ta.ema(close, fastLength)
+slowEMA = ta.ema(close, slowLength)
+
+// Plots
+plot(fastEMA, "Fast EMA", color=color.new(#2962FF, 0), linewidth=2)
+plot(slowEMA, "Slow EMA", color=color.new(#FF6D00, 0), linewidth=2)
+
+// Crossover Conditions
+bullishCross = ta.crossover(fastEMA, slowEMA)
+bearishCross = ta.crossunder(fastEMA, slowEMA)
+
+// Entry & Exit Orders
+if (bullishCross)
+    sl = close * (1 - slPercent / 100)
+    tp = close * (1 + tpPercent / 100)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Exit Long", "Long", stop=sl, limit=tp)
+
+if (bearishCross)
+    sl = close * (1 + slPercent / 100)
+    tp = close * (1 - tpPercent / 100)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Exit Short", "Short", stop=sl, limit=tp)
