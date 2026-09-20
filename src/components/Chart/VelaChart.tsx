@@ -152,7 +152,7 @@ export const VelaChart: React.FC<VelaChartProps> = ({
         } catch (err) {
           console.warn('orchestrator.setBarSeries notice:', err);
         }
-      } else {
+      } else if (chartInstanceRef.current) {
         chartInstanceRef.current
           .setMarket({
             symbol,
@@ -163,14 +163,14 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       }
 
       // Re-apply indicator if script changed on same market
-      if (pineScript && pineScript !== appliedScriptRef.current) {
+      if (pineScript && pineScript !== appliedScriptRef.current && chartInstanceRef.current) {
         if (indicatorHandleRef.current) {
           try {
-            chartInstanceRef.current.removeIndicator?.(indicatorHandleRef.current);
+            (chartInstanceRef.current as any).removeIndicator?.(indicatorHandleRef.current);
           } catch {}
         }
         try {
-          indicatorHandleRef.current = chartInstanceRef.current.addIndicator?.(pineScript);
+          indicatorHandleRef.current = (chartInstanceRef.current as any).addIndicator?.(pineScript);
           appliedScriptRef.current = pineScript;
         } catch (e) {
           console.warn('addIndicator update notice:', e);

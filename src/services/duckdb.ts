@@ -1,9 +1,13 @@
 import * as duckdb from '@duckdb/duckdb-wasm';
-import type { Bar, Timeframe } from '../types';
+import type { Bar } from '../types';
 
 let dbInstance: duckdb.AsyncDuckDB | null = null;
 let connInstance: duckdb.AsyncDuckDBConnection | null = null;
 let initPromise: Promise<duckdb.AsyncDuckDBConnection> | null = null;
+
+export function getDuckDBInstance(): duckdb.AsyncDuckDB | null {
+  return dbInstance;
+}
 
 /**
  * Initializes the embedded in-browser DuckDB-WASM OLAP engine.

@@ -15,12 +15,8 @@ import {
   Maximize2,
   Minimize2,
   RefreshCw,
-  Table,
-  Search,
-  Sparkles,
   FolderOpen,
   Save,
-  Folder,
 } from 'lucide-react';
 import type { BacktestReport, PineScriptTemplate } from '../../types';
 import { PINE_TEMPLATES } from '../../services/pineTemplates';
@@ -67,7 +63,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onClearCache,
   isDownloading = false,
   currentSymbol = 'BTCUSDT',
-  onSelectSymbol,
+  onSelectSymbol: _onSelectSymbol,
   templates = PINE_TEMPLATES,
   activeFolder = 'strategies',
   onRefreshStrategies,
