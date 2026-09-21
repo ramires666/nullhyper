@@ -194,7 +194,6 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       if (orchestrator && typeof orchestrator.setBarSeries === 'function') {
         try {
           orchestrator.setBarSeries(ohlcvBars, { preserveView: true });
-          orchestrator.notifySessionsBars?.('backfill');
           setTimeout(checkPrefetchNeed, 60);
         } catch (err) {
           console.warn('orchestrator.setBarSeries notice:', err);

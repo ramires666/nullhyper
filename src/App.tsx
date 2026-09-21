@@ -564,20 +564,7 @@ export const App: React.FC = () => {
       }
 
       // 3. Asynchronously load cached DB or fetch latest live quotes
-      loadMarketData(sym, currentTimeframeRef.current).then((freshBars) => {
-        if (freshBars && freshBars.length > 0 && currentSymbolRef.current === sym) {
-          const { report, logs } = executePineBacktest(
-            activeScript,
-            sym,
-            currentTimeframeRef.current,
-            freshBars,
-            100000,
-            strategyInputsRef.current
-          );
-          setBacktestReport(report);
-          setCompilerLogs(logs);
-        }
-      });
+      loadMarketData(sym, currentTimeframeRef.current);
     },
     [activeScript, loadMarketData]
   );
@@ -594,35 +581,8 @@ export const App: React.FC = () => {
       const initialBars = getRealMarketBars(currentSymbolRef.current, tf);
       setBars(initialBars);
 
-      // 2. Run backtest with current strategy inputs!
-      if (initialBars.length > 0) {
-        const { report, logs } = executePineBacktest(
-          activeScript,
-          currentSymbolRef.current,
-          tf,
-          initialBars,
-          100000,
-          strategyInputsRef.current
-        );
-        setBacktestReport(report);
-        setCompilerLogs(logs);
-      }
-
-      // 3. Asynchronously check DB / live
-      loadMarketData(currentSymbolRef.current, tf).then((freshBars) => {
-        if (freshBars && freshBars.length > 0 && currentTimeframeRef.current === tf) {
-          const { report, logs } = executePineBacktest(
-            activeScript,
-            currentSymbolRef.current,
-            tf,
-            freshBars,
-            100000,
-            strategyInputsRef.current
-          );
-          setBacktestReport(report);
-          setCompilerLogs(logs);
-        }
-      });
+      // 2. Asynchronously check DB / live (setBars inside loadMarketData triggers debounced backtest)
+      loadMarketData(currentSymbolRef.current, tf);
     },
     [activeScript, loadMarketData]
   );
@@ -821,18 +781,7 @@ export const App: React.FC = () => {
       setCompilerLogs(logs);
     }
 
-    loadMarketData(currentSymbol, currentTimeframe).then((loadedBars) => {
-      if (loadedBars && loadedBars.length > 0) {
-        const { report, logs } = executePineBacktest(
-          activeScript,
-          currentSymbol,
-          currentTimeframe,
-          loadedBars
-        );
-        setBacktestReport(report);
-        setCompilerLogs(logs);
-      }
-    });
+    loadMarketData(currentSymbol, currentTimeframe);
 
     return () => {
       isMounted = false;
