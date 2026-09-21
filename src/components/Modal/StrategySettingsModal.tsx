@@ -524,10 +524,22 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                           ? param.value
                           : param.defval;
 
+                      const isBool = param.type === 'bool';
+                      const isBoolActive = isBool && (currentVal === true || currentVal === 'true');
+
                       return (
                         <div
                           key={param.id}
-                          className="bg-[#1b202e] border border-[#2a3245] rounded-lg p-2.5 flex items-center justify-between gap-3 hover:border-[#38435d] transition-colors"
+                          onClick={() => {
+                            if (isBool) {
+                              commitParam(param.id, !isBoolActive);
+                            }
+                          }}
+                          className={`bg-[#1b202e] border border-[#2a3245] rounded-lg p-2.5 flex items-center justify-between gap-3 transition-colors ${
+                            isBool
+                              ? 'cursor-pointer hover:border-blue-500/70 hover:bg-[#202738]'
+                              : 'hover:border-[#38435d]'
+                          }`}
                         >
                           {/* Label & Tooltip */}
                           <div className="flex-1 min-w-0 pr-2">
@@ -553,21 +565,57 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
 
                           {/* Control */}
                           <div className="flex-shrink-0">
-                            {/* BOOL TOGGLE */}
-                            {param.type === 'bool' && (
-                              <button
-                                type="button"
-                                onClick={() => commitParam(param.id, !currentVal)}
-                                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
-                                  currentVal ? 'bg-emerald-600' : 'bg-gray-700'
-                                }`}
+                            {/* BOOL TOGGLE WITH HIGH-VISIBILITY TEXT BADGE & SLIDER */}
+                            {isBool && (
+                              <div
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                  userSelect: 'none',
+                                }}
                               >
                                 <span
-                                  className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                                    currentVal ? 'translate-x-6' : 'translate-x-1'
-                                  }`}
-                                />
-                              </button>
+                                  style={{
+                                    fontSize: '11px',
+                                    fontWeight: 700,
+                                    fontFamily: 'var(--font-mono, monospace)',
+                                    color: isBoolActive ? '#10b981' : '#6b7280',
+                                    letterSpacing: '0.04em',
+                                  }}
+                                >
+                                  {isBoolActive ? 'ВКЛ' : 'ВЫКЛ'}
+                                </span>
+                                <div
+                                  role="switch"
+                                  aria-checked={isBoolActive}
+                                  style={{
+                                    position: 'relative',
+                                    display: 'inline-flex',
+                                    alignItems: 'center',
+                                    width: '46px',
+                                    height: '24px',
+                                    borderRadius: '12px',
+                                    backgroundColor: isBoolActive ? '#089981' : '#2b3242',
+                                    border: isBoolActive ? '1px solid #10b981' : '1px solid #414a5e',
+                                    transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                                    padding: '2px',
+                                    boxSizing: 'border-box',
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      width: '18px',
+                                      height: '18px',
+                                      borderRadius: '50%',
+                                      backgroundColor: '#ffffff',
+                                      boxShadow: '0 2px 4px rgba(0, 0, 0, 0.4)',
+                                      transform: isBoolActive ? 'translateX(22px)' : 'translateX(0px)',
+                                      transition: 'transform 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                                    }}
+                                  />
+                                </div>
+                              </div>
                             )}
 
                             {/* STRING DROPDOWN WITH OPTIONS */}
