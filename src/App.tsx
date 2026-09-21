@@ -361,32 +361,17 @@ export const App: React.FC = () => {
     [bars]
   );
 
-  // Single parameter update handler with immediate auto-recalculation and localStorage persistence
+  // Single parameter update handler - saves to localStorage immediately WITHOUT triggering heavy recalculation
   const handleUpdateStrategyParam = useCallback(
     (paramId: string, value: any) => {
       const updated = { ...strategyInputsRef.current, [paramId]: value };
       strategyInputsRef.current = updated;
       setStrategyInputs(updated);
       setStoredStrategyInputs(activeStrategyIdRef.current, updated);
-
-      if (bars.length > 0) {
-        try {
-          const { report, logs } = executePineBacktest(
-            activeScriptRef.current,
-            currentSymbolRef.current,
-            currentTimeframeRef.current,
-            bars,
-            100000,
-            updated
-          );
-          setBacktestReport(report);
-          setCompilerLogs(logs);
-        } catch (err: any) {
-          console.warn('[Pine Backtest Error]', err);
-        }
-      }
+      // NOTE: DO NOT call executePineBacktest here!
+      // User can adjust multiple parameters smoothly without freezing the main thread on 768k bars.
     },
-    [bars]
+    []
   );
 
   // Reset strategy parameters handler
@@ -413,7 +398,7 @@ export const App: React.FC = () => {
     }
   }, [bars]);
 
-  // Guaranteed reactive auto-recalculation whenever script, bars, symbol, timeframe, or inputs change
+  // Reactive recalculation ONLY when script, bars, symbol, or timeframe changes
   useEffect(() => {
     if (bars.length === 0) return;
     const timer = setTimeout(() => {
@@ -424,7 +409,7 @@ export const App: React.FC = () => {
           currentTimeframe,
           bars,
           100000,
-          strategyInputs
+          strategyInputsRef.current
         );
         setBacktestReport(report);
         setCompilerLogs(logs);
@@ -434,7 +419,7 @@ export const App: React.FC = () => {
     }, 120);
 
     return () => clearTimeout(timer);
-  }, [activeScript, bars, currentSymbol, currentTimeframe, strategyInputs]);
+  }, [activeScript, bars, currentSymbol, currentTimeframe]);
 
 
   // Keep refs updated

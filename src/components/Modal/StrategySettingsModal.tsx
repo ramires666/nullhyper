@@ -8,6 +8,8 @@ import {
   HelpCircle,
   Search,
   Check,
+  Zap,
+  Play,
   GripVertical,
   PanelRightClose,
   PanelRightOpen,
@@ -50,12 +52,20 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
 
   // Local inputs state for responsive typing and instant updates
   const [localInputs, setLocalInputs] = useState<Record<string, any>>(() => ({ ...strategyInputs }));
-  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
+  const [hasUnappliedChanges, setHasUnappliedChanges] = useState<boolean>(false);
+  const [autoRecalc, setAutoRecalc] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('nullhyper_auto_recalc') === 'true'; // OFF by default!
+    } catch {
+      return false;
+    }
+  });
   const debounceTimerRef = useRef<any>(null);
 
   // Keep localInputs in sync when strategyInputs changes from outside or modal re-opens
   useEffect(() => {
     setLocalInputs({ ...strategyInputs });
+    setHasUnappliedChanges(false);
   }, [strategyInputs, isOpen]);
 
   // Clean up debounce timer on unmount
@@ -65,7 +75,34 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
     };
   }, []);
 
-  // Immediate commit and recalculation for toggles, steppers, and selects
+  // Keyboard shortcut: Ctrl+Enter (or Cmd+Enter) to instantly apply and recalculate
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleApply();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [localInputs]);
+
+  // Toggle auto-recalculation mode
+  const handleToggleAutoRecalc = () => {
+    setAutoRecalc((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('nullhyper_auto_recalc', String(next));
+      } catch {}
+      if (next && onApplyStrategyParams) {
+        onApplyStrategyParams(localInputs);
+        setHasUnappliedChanges(false);
+      }
+      return next;
+    });
+  };
+
+  // Immediate commit for toggles, steppers, and selects (SAVES TO LOCALSTORAGE, NO HEAVY CALCULATION)
   const commitParam = (paramId: string, value: any) => {
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
@@ -73,42 +110,60 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
     }
     const updated = { ...localInputs, [paramId]: value };
     setLocalInputs(updated);
-    setSaveStatus('saving');
+    setHasUnappliedChanges(true);
 
+    // Save parameter to localStorage immediately via parent
     if (onUpdateStrategyParam) {
       onUpdateStrategyParam(paramId, value);
-    } else if (onApplyStrategyParams) {
-      onApplyStrategyParams(updated);
     }
 
-    setTimeout(() => {
-      setSaveStatus('saved');
-    }, 150);
+    // Only auto-recalculate if user explicitly turned on autoRecalc
+    if (autoRecalc && onApplyStrategyParams) {
+      onApplyStrategyParams(updated);
+      setHasUnappliedChanges(false);
+    }
   };
 
   // Debounced input for text or number typing
   const handleDebouncedInput = (paramId: string, value: any) => {
     const updated = { ...localInputs, [paramId]: value };
     setLocalInputs(updated);
-    setSaveStatus('saving');
+    setHasUnappliedChanges(true);
+
+    if (onUpdateStrategyParam) {
+      onUpdateStrategyParam(paramId, value);
+    }
 
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
     }
     debounceTimerRef.current = setTimeout(() => {
-      if (onUpdateStrategyParam) {
-        onUpdateStrategyParam(paramId, value);
-      } else if (onApplyStrategyParams) {
+      if (autoRecalc && onApplyStrategyParams) {
         onApplyStrategyParams(updated);
+        setHasUnappliedChanges(false);
       }
-      setSaveStatus('saved');
-    }, 250);
+    }, 350);
+  };
+
+  // Explicit calculation action ("Применить и рассчитать")
+  const handleApply = (shouldClose: boolean = false) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    if (onApplyStrategyParams) {
+      onApplyStrategyParams(localInputs);
+    }
+    setHasUnappliedChanges(false);
+    if (shouldClose) {
+      onClose();
+    }
   };
 
   const handleReset = () => {
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     setLocalInputs({});
-    setSaveStatus('saved');
+    setHasUnappliedChanges(false);
     onResetStrategyParams();
   };
 
@@ -117,9 +172,6 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
       debounceTimerRef.current = null;
-      if (onApplyStrategyParams) {
-        onApplyStrategyParams(localInputs);
-      }
     }
     onClose();
   };
@@ -294,44 +346,80 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
         <>
           {/* 2. Recalculation Status & Backtest Metrics Banner */}
           <div className="px-4 py-2.5 bg-[#101420] border-b border-[#23293a] flex flex-wrap items-center justify-between gap-2 text-xs flex-shrink-0">
-            <div className="flex items-center space-x-2">
-              {saveStatus === 'saving' ? (
-                <>
-                  <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
-                  <span className="text-xs font-semibold text-amber-300">
-                    Сохранение и пересчет...
+            <div className="flex items-center space-x-2.5 flex-wrap">
+              {hasUnappliedChanges ? (
+                <div className="flex items-center space-x-1.5 text-amber-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+                  <span className="font-semibold text-xs">
+                    Параметры сохранены • Нажмите «Применить»
                   </span>
-                </>
+                </div>
               ) : (
-                <>
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 flex-shrink-0 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
-                  <span className="text-xs font-semibold text-emerald-400">
-                    ✓ Сохранено в браузере (LocalStorage)
+                <div className="flex items-center space-x-1.5 text-emerald-400">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 flex-shrink-0 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
+                  <span className="font-semibold text-xs">
+                    ✓ Расчет актуален • Сохранено в памяти
                   </span>
-                </>
+                </div>
               )}
+
+              {/* Auto-recalculation toggle (Disabled by default!) */}
+              <button
+                type="button"
+                onClick={handleToggleAutoRecalc}
+                className={`flex items-center space-x-1 px-2 py-0.5 rounded text-[11px] font-semibold border transition-all cursor-pointer ${
+                  autoRecalc
+                    ? 'bg-blue-950/80 text-blue-300 border-blue-500/60 shadow-[0_0_10px_rgba(59,130,246,0.25)]'
+                    : 'bg-[#181d2a] text-gray-400 border-[#2b3347] hover:text-gray-200'
+                }`}
+                title={
+                  autoRecalc
+                    ? 'Автоперерасчет ВКЛЮЧЕН: бэктест пересчитывается автоматически'
+                    : 'Автоперерасчет ВЫКЛЮЧЕН: меняйте параметры без зависаний, пересчет по кнопке «Применить»'
+                }
+              >
+                <Zap size={11} className={autoRecalc ? 'text-amber-400 fill-amber-400' : 'text-gray-400'} />
+                <span>Автоперерасчет: {autoRecalc ? 'ВКЛ' : 'ВЫКЛ'}</span>
+              </button>
             </div>
 
-            {backtestReport && (
-              <div className="flex items-center space-x-2 font-mono text-xs">
-                <span className="px-2 py-1 rounded bg-[#1c2233] text-gray-200 border border-[#2b354e]">
-                  Сделок: <strong className="text-white font-bold">{backtestReport.totalTrades}</strong>
-                </span>
-                <span
-                  className={`px-2 py-1 rounded border font-bold text-sm ${
-                    backtestReport.netProfit >= 0
-                      ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/60'
-                      : 'bg-rose-950/80 text-rose-400 border-rose-800/60'
-                  }`}
-                >
-                  {backtestReport.netProfit >= 0 ? '+' : ''}$
-                  {backtestReport.netProfit.toLocaleString()}
-                </span>
-                <span className="px-2 py-1 rounded bg-[#1c2233] text-gray-300 border border-[#2b354e]">
-                  Win: <strong className="text-emerald-400 font-bold">{backtestReport.winRate}%</strong>
-                </span>
-              </div>
-            )}
+            {/* Quick Action Button & Metrics */}
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => handleApply(false)}
+                className={`flex items-center space-x-1.5 px-3 py-1 rounded text-xs font-bold transition-all shadow-md cursor-pointer border ${
+                  hasUnappliedChanges
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white border-blue-400/60 shadow-blue-500/30'
+                    : 'bg-[#1b2234] hover:bg-[#252f47] text-gray-300 border-[#2e3a54]'
+                }`}
+                title="Пересчитать бэктест по сохраненным параметрам (Ctrl+Enter)"
+              >
+                <Play size={11} className="fill-current" />
+                <span>Применить</span>
+              </button>
+
+              {backtestReport && (
+                <div className="flex items-center space-x-1.5 font-mono text-xs">
+                  <span className="px-2 py-0.5 rounded bg-[#1c2233] text-gray-200 border border-[#2b354e]">
+                    Сделок: <strong className="text-white font-bold">{backtestReport.totalTrades}</strong>
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded border font-bold ${
+                      backtestReport.netProfit >= 0
+                        ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/60'
+                        : 'bg-rose-950/80 text-rose-400 border-rose-800/60'
+                    }`}
+                  >
+                    {backtestReport.netProfit >= 0 ? '+' : ''}$
+                    {backtestReport.netProfit.toLocaleString()}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-[#1c2233] text-gray-300 border border-[#2b354e]">
+                    Win: <strong className="text-emerald-400 font-bold">{backtestReport.winRate}%</strong>
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* 3. Search Bar & Category Navigation Tabs */}
@@ -592,12 +680,12 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
             )}
           </div>
 
-          {/* 5. Sticky Footer with Real-Time Auto-Save status */}
+          {/* 5. Sticky Footer with Real-Time Auto-Save status & Manual Apply */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-[#2a2e39] bg-[#141824] flex-shrink-0">
             <div className="flex items-center space-x-2 text-xs">
               <div className="flex items-center space-x-1.5 text-emerald-400">
                 <Check size={14} className="text-emerald-400 flex-shrink-0" />
-                <span className="font-medium">Все изменения сохранены в браузере</span>
+                <span>Все настройки сохранены в памяти (LocalStorage)</span>
               </div>
             </div>
 
@@ -614,9 +702,23 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
 
               <button
                 type="button"
-                onClick={handleClose}
-                className="flex items-center space-x-1.5 px-5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold text-sm transition-all shadow-md cursor-pointer"
-                title="Закрыть панель (все параметры сохранены)"
+                onClick={() => handleApply(false)}
+                className={`flex items-center space-x-1.5 px-4 py-1.5 rounded-md text-sm font-bold transition-all shadow-md cursor-pointer border ${
+                  hasUnappliedChanges
+                    ? 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white border-blue-400/60 shadow-blue-500/30'
+                    : 'bg-[#1b2234] hover:bg-[#252f47] text-gray-200 border-[#2e3a54]'
+                }`}
+                title="Пересчитать бэктест по сохраненным параметрам (Ctrl+Enter)"
+              >
+                <Play size={13} className="fill-current" />
+                <span>Применить и рассчитать</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleApply(true)}
+                className="flex items-center space-x-1.5 px-5 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white font-bold text-sm transition-all shadow-md cursor-pointer border border-emerald-400/40"
+                title="Применить параметры и закрыть окно"
               >
                 <Check size={16} />
                 <span>Готово</span>
