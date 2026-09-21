@@ -8,7 +8,6 @@ import {
   HelpCircle,
   Search,
   Check,
-  Zap,
   GripVertical,
   PanelRightClose,
   PanelRightOpen,
@@ -49,49 +48,79 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
   const [selectedGroup, setSelectedGroup] = useState<string>('ALL');
   const [isMinimized, setIsMinimized] = useState(false);
 
-  // Local draft inputs state so modifying fields DOES NOT auto-recalculate on every keystroke
-  const [draftInputs, setDraftInputs] = useState<Record<string, any>>(() => ({ ...strategyInputs }));
+  // Local inputs state for responsive typing and instant updates
+  const [localInputs, setLocalInputs] = useState<Record<string, any>>(() => ({ ...strategyInputs }));
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving'>('saved');
+  const debounceTimerRef = useRef<any>(null);
 
-  // Keep draftInputs in sync when strategyInputs changes from outside or modal re-opens
+  // Keep localInputs in sync when strategyInputs changes from outside or modal re-opens
   useEffect(() => {
-    setDraftInputs({ ...strategyInputs });
+    setLocalInputs({ ...strategyInputs });
   }, [strategyInputs, isOpen]);
 
-  // Check if draft inputs differ from committed strategyInputs
-  const hasChanges = useMemo(() => {
-    const draftKeys = Object.keys(draftInputs);
-    const committedKeys = Object.keys(strategyInputs);
-    if (draftKeys.length !== committedKeys.length) return true;
-    for (const k of draftKeys) {
-      if (draftInputs[k] !== strategyInputs[k]) return true;
-    }
-    return false;
-  }, [draftInputs, strategyInputs]);
+  // Clean up debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, []);
 
-  const handleUpdateDraft = (paramId: string, value: any) => {
-    setDraftInputs((prev) => ({ ...prev, [paramId]: value }));
+  // Immediate commit and recalculation for toggles, steppers, and selects
+  const commitParam = (paramId: string, value: any) => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    const updated = { ...localInputs, [paramId]: value };
+    setLocalInputs(updated);
+    setSaveStatus('saving');
+
+    if (onUpdateStrategyParam) {
+      onUpdateStrategyParam(paramId, value);
+    } else if (onApplyStrategyParams) {
+      onApplyStrategyParams(updated);
+    }
+
+    setTimeout(() => {
+      setSaveStatus('saved');
+    }, 150);
   };
 
-  const handleApply = (shouldClose: boolean = false) => {
-    if (onApplyStrategyParams) {
-      onApplyStrategyParams(draftInputs);
-    } else if (onUpdateStrategyParam) {
-      for (const [id, val] of Object.entries(draftInputs)) {
-        onUpdateStrategyParam(id, val);
+  // Debounced input for text or number typing
+  const handleDebouncedInput = (paramId: string, value: any) => {
+    const updated = { ...localInputs, [paramId]: value };
+    setLocalInputs(updated);
+    setSaveStatus('saving');
+
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+    debounceTimerRef.current = setTimeout(() => {
+      if (onUpdateStrategyParam) {
+        onUpdateStrategyParam(paramId, value);
+      } else if (onApplyStrategyParams) {
+        onApplyStrategyParams(updated);
       }
-    }
-    if (shouldClose) {
-      onClose();
-    }
+      setSaveStatus('saved');
+    }, 250);
   };
 
   const handleReset = () => {
-    setDraftInputs({});
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    setLocalInputs({});
+    setSaveStatus('saved');
     onResetStrategyParams();
   };
 
-  const handleCancel = () => {
-    setDraftInputs({ ...strategyInputs });
+  // Closing simply closes the modal; all changes are already permanently auto-saved!
+  const handleClose = () => {
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+      if (onApplyStrategyParams) {
+        onApplyStrategyParams(localInputs);
+      }
+    }
     onClose();
   };
 
@@ -252,9 +281,9 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
 
           <button
             type="button"
-            onClick={handleCancel}
+            onClick={handleClose}
             className="p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-[#22293a] transition-colors"
-            title="Закрыть панель настроек"
+            title="Закрыть панель (все параметры сохранены)"
           >
             <X size={17} />
           </button>
@@ -266,18 +295,18 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
           {/* 2. Recalculation Status & Backtest Metrics Banner */}
           <div className="px-4 py-2.5 bg-[#101420] border-b border-[#23293a] flex flex-wrap items-center justify-between gap-2 text-xs flex-shrink-0">
             <div className="flex items-center space-x-2">
-              {hasChanges ? (
+              {saveStatus === 'saving' ? (
                 <>
                   <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
-                  <span className="text-xs font-semibold text-amber-400 uppercase tracking-wider">
-                    Параметры изменены • Нажмите «Готово»
+                  <span className="text-xs font-semibold text-amber-300">
+                    Сохранение и пересчет...
                   </span>
                 </>
               ) : (
                 <>
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 flex-shrink-0" />
-                  <span className="text-xs font-semibold text-emerald-400 uppercase tracking-wider">
-                    Параметры применены
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 flex-shrink-0 shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
+                  <span className="text-xs font-semibold text-emerald-400">
+                    ✓ Сохранено в браузере (LocalStorage)
                   </span>
                 </>
               )}
@@ -401,8 +430,8 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                   <div className="space-y-2.5 pt-1">
                     {groupParams.map((param) => {
                       const currentVal =
-                        draftInputs[param.id] !== undefined
-                          ? draftInputs[param.id]
+                        localInputs[param.id] !== undefined
+                          ? localInputs[param.id]
                           : param.value !== undefined
                           ? param.value
                           : param.defval;
@@ -440,7 +469,7 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                             {param.type === 'bool' && (
                               <button
                                 type="button"
-                                onClick={() => handleUpdateDraft(param.id, !currentVal)}
+                                onClick={() => commitParam(param.id, !currentVal)}
                                 className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
                                   currentVal ? 'bg-emerald-600' : 'bg-gray-700'
                                 }`}
@@ -463,7 +492,7 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                                     !isNaN(Number(raw)) && param.type !== 'string'
                                       ? Number(raw)
                                       : raw;
-                                  handleUpdateDraft(param.id, parsed);
+                                  commitParam(param.id, parsed);
                                 }}
                                 className="bg-[#11141e] border border-[#2e374c] rounded-md px-2.5 py-1.5 text-white text-sm outline-none focus:border-blue-500 max-w-[210px] font-sans cursor-pointer"
                               >
@@ -489,9 +518,9 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                                       );
                                       if (param.minval !== undefined && nextVal < param.minval)
                                         return;
-                                      handleUpdateDraft(param.id, nextVal);
+                                      commitParam(param.id, nextVal);
                                     }}
-                                    className="w-7 h-7 rounded bg-[#242b3d] hover:bg-[#30394f] text-gray-100 flex items-center justify-center font-bold text-sm border border-[#323c52] transition-colors"
+                                    className="w-7 h-7 rounded bg-[#242b3d] hover:bg-[#30394f] text-gray-100 flex items-center justify-center font-bold text-sm border border-[#323c52] transition-colors cursor-pointer"
                                   >
                                     -
                                   </button>
@@ -503,7 +532,7 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                                     max={param.maxval}
                                     onChange={(e) => {
                                       const num = parseFloat(e.target.value);
-                                      handleUpdateDraft(
+                                      handleDebouncedInput(
                                         param.id,
                                         isNaN(num)
                                           ? 0
@@ -511,6 +540,9 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                                           ? Math.round(num)
                                           : num
                                       );
+                                    }}
+                                    onBlur={() => {
+                                      commitParam(param.id, currentVal);
                                     }}
                                     style={{ width: '68px' }}
                                     className="bg-[#11141e] border border-[#2e374c] rounded px-1.5 py-1 text-center text-white font-mono text-sm font-semibold outline-none focus:border-blue-500"
@@ -525,9 +557,9 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                                       );
                                       if (param.maxval !== undefined && nextVal > param.maxval)
                                         return;
-                                      handleUpdateDraft(param.id, nextVal);
+                                      commitParam(param.id, nextVal);
                                     }}
-                                    className="w-7 h-7 rounded bg-[#242b3d] hover:bg-[#30394f] text-gray-100 flex items-center justify-center font-bold text-sm border border-[#323c52] transition-colors"
+                                    className="w-7 h-7 rounded bg-[#242b3d] hover:bg-[#30394f] text-gray-100 flex items-center justify-center font-bold text-sm border border-[#323c52] transition-colors cursor-pointer"
                                   >
                                     +
                                   </button>
@@ -544,8 +576,9 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
                                     param.type === 'session' ? 'e.g. 0200-0230' : ''
                                   }
                                   onChange={(e) =>
-                                    handleUpdateDraft(param.id, e.target.value)
+                                    handleDebouncedInput(param.id, e.target.value)
                                   }
+                                  onBlur={() => commitParam(param.id, currentVal)}
                                   className="w-32 bg-[#11141e] border border-[#2e374c] rounded-md px-3 py-1.5 text-white font-mono text-sm outline-none focus:border-blue-500"
                                 />
                               )}
@@ -559,60 +592,31 @@ export const StrategySettingsModal: React.FC<StrategySettingsPanelProps> = ({
             )}
           </div>
 
-          {/* 5. Sticky Footer */}
+          {/* 5. Sticky Footer with Real-Time Auto-Save status */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-[#2a2e39] bg-[#141824] flex-shrink-0">
             <div className="flex items-center space-x-2 text-xs">
-              {hasChanges ? (
-                <div className="flex items-center space-x-1.5 text-amber-300">
-                  <Zap size={14} className="text-amber-400 flex-shrink-0" />
-                  <span className="font-medium">Ожидает нажатия «Готово»</span>
-                </div>
-              ) : (
-                <div className="flex items-center space-x-1.5 text-gray-400">
-                  <Check size={14} className="text-emerald-400 flex-shrink-0" />
-                  <span>Параметры актуальны</span>
-                </div>
-              )}
+              <div className="flex items-center space-x-1.5 text-emerald-400">
+                <Check size={14} className="text-emerald-400 flex-shrink-0" />
+                <span className="font-medium">Все изменения сохранены в браузере</span>
+              </div>
             </div>
 
             <div className="flex items-center space-x-2.5">
               <button
                 type="button"
                 onClick={handleReset}
-                className="px-3.5 py-1.5 rounded-md bg-[#242b3b] hover:bg-[#2e374c] text-gray-200 text-sm font-medium transition-colors"
-                title="Сбросить все параметры к значениям по умолчанию"
+                className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-md bg-[#242b3b] hover:bg-[#2e374c] text-gray-200 text-sm font-medium transition-colors border border-[#343e56] cursor-pointer"
+                title="Сбросить все параметры к значениям скрипта по умолчанию"
               >
-                Сброс
+                <RotateCcw size={14} className="text-amber-400" />
+                <span>Сброс к умолчанию</span>
               </button>
 
               <button
                 type="button"
-                onClick={handleCancel}
-                className="px-3.5 py-1.5 rounded-md bg-[#1e2330] hover:bg-[#2a3245] text-gray-300 text-sm font-medium transition-colors border border-[#2e374c]"
-                title="Отменить изменения и закрыть"
-              >
-                Отмена
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleApply(false)}
-                disabled={!hasChanges}
-                className={`px-4 py-1.5 rounded-md text-sm font-semibold transition-colors border ${
-                  hasChanges
-                    ? 'bg-[#1b253b] text-blue-300 border-blue-500/60 hover:bg-blue-600/30 cursor-pointer'
-                    : 'bg-[#181d2a] text-gray-500 border-[#2a3245] cursor-not-allowed opacity-50'
-                }`}
-                title="Пересчитать стратегию по новым параметрам (оставив панель открытой)"
-              >
-                Применить
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleApply(true)}
+                onClick={handleClose}
                 className="flex items-center space-x-1.5 px-5 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-bold text-sm transition-all shadow-md cursor-pointer"
-                title="Пересчитать стратегию по новым параметрам и закрыть окно"
+                title="Закрыть панель (все параметры сохранены)"
               >
                 <Check size={16} />
                 <span>Готово</span>

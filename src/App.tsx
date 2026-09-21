@@ -30,6 +30,17 @@ import {
   clearDuckDBBars,
   type DuckDBStats,
 } from './services/duckdb';
+import {
+  getStoredStrategyInputs,
+  setStoredStrategyInputs,
+  clearStoredStrategyInputs,
+  getStoredSymbol,
+  setStoredSymbol,
+  getStoredTimeframe,
+  setStoredTimeframe,
+  getStoredActiveStrategyId,
+  setStoredActiveStrategyId,
+} from './services/settingsStorage';
 
 const INITIAL_SYMBOLS: SymbolMetadata[] = [
   {
@@ -131,19 +142,22 @@ const INITIAL_SYMBOLS: SymbolMetadata[] = [
 ];
 
 export const App: React.FC = () => {
-  const [currentSymbol, setCurrentSymbol] = useState<string>('BTCUSDT');
-  const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('1h');
-  const [bars, setBars] = useState<Bar[]>(() => getRealMarketBars('BTCUSDT', '1h'));
-  const [activeScript, setActiveScript] = useState<string>(PINE_TEMPLATES[0].code);
-  const [activeStrategyId, setActiveStrategyId] = useState<string>(() => {
-    try {
-      return localStorage.getItem('nullhyper_active_strategy_id') || 'strategy_nq_2am_breakout_orig';
-    } catch {
-      return 'strategy_nq_2am_breakout_orig';
-    }
+  const [currentSymbol, setCurrentSymbol] = useState<string>(() => getStoredSymbol('NQ=F'));
+  const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>(() => getStoredTimeframe('1m'));
+  const [bars, setBars] = useState<Bar[]>(() => {
+    const sym = getStoredSymbol('NQ=F');
+    const tf = getStoredTimeframe('1m');
+    return getRealMarketBars(sym, tf);
   });
-  const [strategyInputs, setStrategyInputs] = useState<Record<string, any>>({});
+  const [activeStrategyId, setActiveStrategyId] = useState<string>(() =>
+    getStoredActiveStrategyId('strategy_nq_2am_breakout_orig')
+  );
+  const [strategyInputs, setStrategyInputs] = useState<Record<string, any>>(() => {
+    const id = getStoredActiveStrategyId('strategy_nq_2am_breakout_orig');
+    return getStoredStrategyInputs(id);
+  });
   const [strategies, setStrategies] = useState<PineScriptTemplate[]>(PINE_TEMPLATES);
+  const [activeScript, setActiveScript] = useState<string>(PINE_TEMPLATES[0].code);
   const [activeStrategiesFolder, setActiveStrategiesFolder] = useState<string>('strategies');
   const [backtestReport, setBacktestReport] = useState<BacktestReport | null>(null);
   const [compilerLogs, setCompilerLogs] = useState<string[]>([]);
@@ -173,11 +187,11 @@ export const App: React.FC = () => {
   const pendingPrefetchTargetRef = useRef<{ targetOldestTimestamp: number; minBarsNeeded: number } | null>(null);
   const barsRef = useRef<Bar[]>(bars);
   barsRef.current = bars;
-  const currentSymbolRef = useRef<string>('BTCUSDT');
-  const currentTimeframeRef = useRef<Timeframe>('1h');
-  const activeStrategyIdRef = useRef<string>(PINE_TEMPLATES[0].id);
+  const currentSymbolRef = useRef<string>(currentSymbol);
+  const currentTimeframeRef = useRef<Timeframe>(currentTimeframe);
+  const activeStrategyIdRef = useRef<string>(activeStrategyId);
   const activeScriptRef = useRef<string>(activeScript);
-  const strategyInputsRef = useRef<Record<string, any>>({});
+  const strategyInputsRef = useRef<Record<string, any>>(strategyInputs);
 
   currentSymbolRef.current = currentSymbol;
   currentTimeframeRef.current = currentTimeframe;
@@ -219,6 +233,11 @@ export const App: React.FC = () => {
           activeStrategyIdRef.current = matching.id;
           setActiveScript(matching.code);
           activeScriptRef.current = matching.code;
+          const saved = getStoredStrategyInputs(matching.id);
+          if (Object.keys(saved).length > 0) {
+            strategyInputsRef.current = saved;
+            setStrategyInputs(saved);
+          }
         }
         return combined;
       } else {
@@ -282,11 +301,13 @@ export const App: React.FC = () => {
     (templateId: string) => {
       setActiveStrategyId(templateId);
       activeStrategyIdRef.current = templateId;
-      try {
-        localStorage.setItem('nullhyper_active_strategy_id', templateId);
-      } catch {}
-      strategyInputsRef.current = {};
-      setStrategyInputs({});
+      setStoredActiveStrategyId(templateId);
+
+      // Restore saved inputs for THIS template
+      const savedInputs = getStoredStrategyInputs(templateId);
+      strategyInputsRef.current = savedInputs;
+      setStrategyInputs(savedInputs);
+
       const tmpl = strategies.find((t) => t.id === templateId);
       if (tmpl) {
         setActiveScript(tmpl.code);
@@ -299,7 +320,7 @@ export const App: React.FC = () => {
               currentTimeframeRef.current,
               bars,
               100000,
-              {}
+              savedInputs
             );
             setBacktestReport(report);
             setCompilerLogs(logs);
@@ -312,12 +333,13 @@ export const App: React.FC = () => {
     [strategies, bars]
   );
 
-  // Live parameter update handler with instant auto-recalculation
+  // Live parameter update handler with instant auto-recalculation & persistence
   // Apply strategy parameters and recalculate strategy upon explicit confirmation ("Готово" / "Применить")
   const handleApplyStrategyParams = useCallback(
     (newParams: Record<string, any>) => {
       strategyInputsRef.current = newParams;
       setStrategyInputs(newParams);
+      setStoredStrategyInputs(activeStrategyIdRef.current, newParams);
 
       if (bars.length > 0) {
         try {
@@ -339,20 +361,40 @@ export const App: React.FC = () => {
     [bars]
   );
 
-  // Single parameter update handler without automatic instant recalculation
+  // Single parameter update handler with immediate auto-recalculation and localStorage persistence
   const handleUpdateStrategyParam = useCallback(
     (paramId: string, value: any) => {
       const updated = { ...strategyInputsRef.current, [paramId]: value };
       strategyInputsRef.current = updated;
       setStrategyInputs(updated);
+      setStoredStrategyInputs(activeStrategyIdRef.current, updated);
+
+      if (bars.length > 0) {
+        try {
+          const { report, logs } = executePineBacktest(
+            activeScriptRef.current,
+            currentSymbolRef.current,
+            currentTimeframeRef.current,
+            bars,
+            100000,
+            updated
+          );
+          setBacktestReport(report);
+          setCompilerLogs(logs);
+        } catch (err: any) {
+          console.warn('[Pine Backtest Error]', err);
+        }
+      }
     },
-    []
+    [bars]
   );
 
   // Reset strategy parameters handler
   const handleResetStrategyParams = useCallback(() => {
     strategyInputsRef.current = {};
     setStrategyInputs({});
+    clearStoredStrategyInputs(activeStrategyIdRef.current);
+
     if (bars.length > 0) {
       try {
         const { report, logs } = executePineBacktest(
@@ -516,18 +558,21 @@ export const App: React.FC = () => {
       if (sym === currentSymbolRef.current) return;
       currentSymbolRef.current = sym;
       setCurrentSymbol(sym);
+      setStoredSymbol(sym);
 
       // 1. Immediately switch bars to the authentic dataset for the new symbol
       const initialBars = getRealMarketBars(sym, currentTimeframeRef.current);
       setBars(initialBars);
 
-      // 2. Run Pine Script backtest immediately on authentic bars
+      // 2. Run Pine Script backtest immediately on authentic bars with current strategy inputs!
       if (initialBars.length > 0) {
         const { report, logs } = executePineBacktest(
           activeScript,
           sym,
           currentTimeframeRef.current,
-          initialBars
+          initialBars,
+          100000,
+          strategyInputsRef.current
         );
         setBacktestReport(report);
         setCompilerLogs(logs);
@@ -540,7 +585,9 @@ export const App: React.FC = () => {
             activeScript,
             sym,
             currentTimeframeRef.current,
-            freshBars
+            freshBars,
+            100000,
+            strategyInputsRef.current
           );
           setBacktestReport(report);
           setCompilerLogs(logs);
@@ -556,18 +603,21 @@ export const App: React.FC = () => {
       if (tf === currentTimeframeRef.current) return;
       currentTimeframeRef.current = tf;
       setCurrentTimeframe(tf);
+      setStoredTimeframe(tf);
 
       // 1. Immediately resample authentic 1m data to new timeframe
       const initialBars = getRealMarketBars(currentSymbolRef.current, tf);
       setBars(initialBars);
 
-      // 2. Run backtest
+      // 2. Run backtest with current strategy inputs!
       if (initialBars.length > 0) {
         const { report, logs } = executePineBacktest(
           activeScript,
           currentSymbolRef.current,
           tf,
-          initialBars
+          initialBars,
+          100000,
+          strategyInputsRef.current
         );
         setBacktestReport(report);
         setCompilerLogs(logs);
@@ -580,7 +630,9 @@ export const App: React.FC = () => {
             activeScript,
             currentSymbolRef.current,
             tf,
-            freshBars
+            freshBars,
+            100000,
+            strategyInputsRef.current
           );
           setBacktestReport(report);
           setCompilerLogs(logs);
