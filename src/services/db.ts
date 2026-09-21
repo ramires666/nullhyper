@@ -77,15 +77,20 @@ export async function saveBarsToDB(
   const validBars = bars.filter((b) => isPlausibleForSymbol(symbol, b));
   if (validBars.length === 0) return 0;
 
-  const records: StoredBar[] = validBars.map((b) => ({
+  // Cap records stored in IndexedDB to the most recent 10,000 bars.
+  // Static datasets (e.g. 768k continuous bars) are stored in compact files on disk;
+  // IndexedDB is only used as an operational buffer and should never freeze the main thread!
+  const barsToStore = validBars.length > 10000 ? validBars.slice(-10000) : validBars;
+
+  const records: StoredBar[] = barsToStore.map((b) => ({
     symbol,
     timeframe,
     ...b,
   }));
 
   // Clean old overlapping bars before insert
-  const minTime = validBars[0].time;
-  const maxTime = validBars[validBars.length - 1].time;
+  const minTime = barsToStore[0].time;
+  const maxTime = barsToStore[barsToStore.length - 1].time;
   
   await db.bars
     .where('[symbol+timeframe+time]')

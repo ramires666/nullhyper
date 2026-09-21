@@ -84,9 +84,12 @@ export async function insertBarsToDuckDB(
   bars: Bar[]
 ): Promise<number> {
   if (bars.length === 0) return 0;
+  // Cap bars to 10,000 for the in-browser DuckDB table so queries and stats stay ultra-fast without blocking the WASM thread
+  const barsToInsert = bars.length > 10000 ? bars.slice(-10000) : bars;
+
   return runExclusiveDuckDB(async (conn) => {
-    const minTime = bars[0].time;
-    const maxTime = bars[bars.length - 1].time;
+    const minTime = barsToInsert[0].time;
+    const maxTime = barsToInsert[barsToInsert.length - 1].time;
 
     // Delete overlapping range to support idempotent continuous data ingestion
     await conn.query(`
@@ -99,8 +102,8 @@ export async function insertBarsToDuckDB(
 
     // Insert in batches of 1,000 rows
     const batchSize = 1000;
-    for (let i = 0; i < bars.length; i += batchSize) {
-      const chunk = bars.slice(i, i + batchSize);
+    for (let i = 0; i < barsToInsert.length; i += batchSize) {
+      const chunk = barsToInsert.slice(i, i + batchSize);
       const valueStrings = chunk.map(
         (b) =>
           `('${symbol}', '${timeframe}', ${b.time}, ${b.open}, ${b.high}, ${b.low}, ${b.close}, ${b.volume || 0})`
@@ -110,7 +113,7 @@ export async function insertBarsToDuckDB(
       await conn.query(sql);
     }
 
-    return bars.length;
+    return barsToInsert.length;
   });
 }
 

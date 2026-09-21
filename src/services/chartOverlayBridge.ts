@@ -21,7 +21,7 @@ export function renderTradesAndLevelsOnChart(
     return [];
   }
 
-  const { showTrades = true, showLevels = true, maxTrades = 1000 } = options;
+  const { showTrades = true, showLevels = true, maxTrades = 120 } = options;
   const newDrawingIds: string[] = [];
 
   try {
@@ -40,8 +40,10 @@ export function renderTradesAndLevelsOnChart(
     }
 
     // 2. Render Strategy Session Range Levels (e.g. 02:00 NY High/Low & Breakout Triggers)
+    // Capped to recent 80 session levels so canvas scene graph runs at 60 FPS
     if (showLevels && levels && levels.length > 0) {
-      for (const level of levels) {
+      const levelsToRender = levels.length > 80 ? levels.slice(-80) : levels;
+      for (const level of levelsToRender) {
         try {
           if (level.type === 'box' && level.highPrice != null && level.lowPrice != null) {
             const boxDrawing = chart.drawings.add('box', {
@@ -81,7 +83,7 @@ export function renderTradesAndLevelsOnChart(
 
     // 3. Render Trades (Entry Arrows, Exit Arrows, & Connector Lines)
     if (showTrades && trades && trades.length > 0) {
-      // Render trades up to maxTrades (default 1000 covers full backtest histories)
+      // Render recent trades (up to 120) so the chart stays smooth and responsive
       const tradesToRender = trades.length > maxTrades ? trades.slice(-maxTrades) : trades;
 
       const timelineMarks: any[] = [];

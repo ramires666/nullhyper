@@ -109,7 +109,9 @@ export const VelaChart: React.FC<VelaChartProps> = ({
         !onPrefetchHistoryRef.current ||
         isPrefetchingRef.current ||
         isDraggingRef.current ||
-        bars.length < 5
+        bars.length < 5 ||
+        bars.length >= 50000 ||
+        symbol.toUpperCase().includes('NQ')
       ) {
         return;
       }
@@ -162,20 +164,14 @@ export const VelaChart: React.FC<VelaChartProps> = ({
         console.warn('checkPrefetchNeed notice:', err);
       }
     }, 100);
-  }, [bars, timeframe]);
+  }, [bars, timeframe, symbol]);
 
   // Unified Market Lifecycle & Continuous Update Engine
   useEffect(() => {
     if (!containerRef.current || bars.length === 0) return;
 
-    const ohlcvBars = bars.map((b) => ({
-      time: b.time,
-      open: b.open,
-      high: b.high,
-      low: b.low,
-      close: b.close,
-      volume: b.volume,
-    }));
+    // Direct reference to avoid re-allocating 768,000 objects on render cycles
+    const ohlcvBars = bars;
 
     const isSameMarket =
       chartInstanceRef.current &&

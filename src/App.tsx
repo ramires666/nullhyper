@@ -631,7 +631,13 @@ export const App: React.FC = () => {
   const handlePrefetchHistory = useCallback(
     async (targetOldestTimestamp: number, minBarsNeeded: number = 1000) => {
       const currentBars = barsRef.current;
-      if (currentBars.length === 0) return;
+      if (
+        currentBars.length === 0 ||
+        currentBars.length >= 50000 ||
+        currentSymbolRef.current.toUpperCase().includes('NQ')
+      ) {
+        return;
+      }
 
       const currentOldestTime = currentBars[0].time;
       if (currentOldestTime <= targetOldestTimestamp) {
@@ -801,7 +807,7 @@ export const App: React.FC = () => {
       }
     };
 
-    seedDuckDB();
+    const seedTimer = setTimeout(seedDuckDB, 2000);
 
     const initialBars = getRealMarketBars(currentSymbol, currentTimeframe);
     if (initialBars.length > 0) {
@@ -830,6 +836,7 @@ export const App: React.FC = () => {
 
     return () => {
       isMounted = false;
+      clearTimeout(seedTimer);
     };
   }, []);
 
