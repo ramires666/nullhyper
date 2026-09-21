@@ -2,9 +2,7 @@ import React, { useState } from 'react';
 import type { Timeframe, SymbolMetadata } from '../../types';
 import {
   TrendingUp,
-  Code,
   Play,
-  DownloadCloud,
   ChevronDown,
   Camera,
   Search,
@@ -16,8 +14,6 @@ interface TopNavProps {
   onSelectSymbol: (symbol: string) => void;
   onSelectTimeframe: (tf: Timeframe) => void;
   onRunBacktest: () => void;
-  onOpenDataManager: () => void;
-  onOpenPineEditor: () => void;
   availableSymbols: SymbolMetadata[];
   isBacktesting?: boolean;
 }
@@ -30,11 +26,10 @@ export const TopNav: React.FC<TopNavProps> = ({
   onSelectSymbol,
   onSelectTimeframe,
   onRunBacktest,
-  onOpenDataManager,
-  onOpenPineEditor,
   availableSymbols,
   isBacktesting = false,
 }) => {
+
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -134,25 +129,6 @@ export const TopNav: React.FC<TopNavProps> = ({
         </div>
       </div>
 
-      {/* Center: Indicator & Action Tools */}
-      <div className="hidden md:flex items-center space-x-2">
-        <button
-          onClick={onOpenPineEditor}
-          className="flex items-center space-x-1.5 px-3 py-1 rounded bg-[#2a2e39] hover:bg-[#363a45] text-gray-200 transition-colors"
-        >
-          <Code size={13} className="text-blue-400" />
-          <span>Pine Script v6</span>
-        </button>
-
-        <button
-          onClick={onOpenDataManager}
-          className="flex items-center space-x-1.5 px-3 py-1 rounded bg-[#2a2e39] hover:bg-[#363a45] text-gray-200 transition-colors"
-        >
-          <DownloadCloud size={13} className="text-emerald-400" />
-          <span>Data Manager</span>
-        </button>
-      </div>
-
       {/* Right: Run Backtest Button & Screenshot */}
       <div className="flex items-center space-x-2">
         <button
@@ -172,7 +148,23 @@ export const TopNav: React.FC<TopNavProps> = ({
 
         <button
           title="Take Chart Screenshot"
-          onClick={() => alert('Screenshot captured to clipboard!')}
+          onClick={() => {
+            const canvas = document.querySelector('canvas');
+            if (!canvas) return;
+            canvas.toBlob((blob) => {
+              if (!blob) return;
+              try {
+                navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+              } catch {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${currentSymbol}_chart.png`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }
+            });
+          }}
           className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-[#2a2e39] transition-colors"
         >
           <Camera size={14} />
@@ -181,3 +173,4 @@ export const TopNav: React.FC<TopNavProps> = ({
     </header>
   );
 };
+

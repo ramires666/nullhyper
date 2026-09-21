@@ -1,0 +1,55 @@
+//@version=6
+strategy("NQ 2AM Breakout", overlay=true, margin_long=100, margin_short=100, default_qty_type=strategy.fixed, default_qty_value=1)
+
+// ==========================================
+// 2 AM Session Range Breakout Strategy (NQ)
+// ==========================================
+sessionTime    = input.session("0200-0230", "Range Formation Session")
+tradeSession   = input.session("0230-0800", "Trading Session")
+breakoutMargin = input.float(2.0, "Breakout Buffer (pts)", step=0.5)
+slPoints       = input.float(15.0, "Stop Loss (pts)", minval=5.0)
+tpPoints       = input.float(30.0, "Take Profit (pts)", minval=5.0)
+
+var float sessionHigh = na
+var float sessionLow  = na
+var bool  inSession   = false
+var bool  hasTraded   = false
+
+// Detect session transitions
+isSessionBar = not na(time(timeframe.period, sessionTime))
+isTradeBar   = not na(time(timeframe.period, tradeSession))
+
+if isSessionBar
+    if not inSession
+        sessionHigh := high
+        sessionLow  := low
+        inSession   := true
+        hasTraded   := false
+    else
+        sessionHigh := math.max(sessionHigh, high)
+        sessionLow  := math.min(sessionLow, low)
+else
+    inSession := false
+
+// Plots for High / Low Range
+plot(sessionHigh, "2AM Session High", color=color.new(#00E676, 0), linewidth=2, style=plot.style_linebr)
+plot(sessionLow,  "2AM Session Low",  color=color.new(#FF5252, 0), linewidth=2, style=plot.style_linebr)
+
+// Breakout Execution during Trading Session
+if isTradeBar and not hasTraded and not na(sessionHigh) and not na(sessionLow)
+    longTrigger  = sessionHigh + breakoutMargin
+    shortTrigger = sessionLow  - breakoutMargin
+
+    if close > longTrigger
+        strategy.entry("2AM Long", strategy.long)
+        strategy.exit("Exit Long", "2AM Long", stop=close - slPoints, limit=close + tpPoints)
+        hasTraded := true
+
+    if close < shortTrigger
+        strategy.entry("2AM Short", strategy.short)
+        strategy.exit("Exit Short", "2AM Short", stop=close + slPoints, limit=close - tpPoints)
+        hasTraded := true
+
+// End of session cleanup
+if not isTradeBar and not isSessionBar
+    hasTraded := false

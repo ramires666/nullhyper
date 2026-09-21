@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Bar, Timeframe, SymbolMetadata, BacktestReport, PineScriptTemplate } from './types';
 import { TopNav } from './components/Header/TopNav';
-import { DrawingToolbar } from './components/Toolbar/DrawingToolbar';
 import { Watchlist } from './components/Sidebar/Watchlist';
 import { BottomDock } from './components/Dock/BottomDock';
 import { VelaChart } from './components/Chart/VelaChart';
@@ -13,6 +12,7 @@ import {
   setStoredCustomStrategiesDir,
 } from './services/pineFileSystem';
 import { executePineBacktest } from './services/pineBridge';
+import { focusTradeOnChart } from './services/chartOverlayBridge';
 import { getRealMarketBars } from './services/providers/realDataLoader';
 import { fetchBinanceKlines } from './services/providers/binance';
 import { fetchYahooQuotes } from './services/providers/yahoo';
@@ -134,6 +134,8 @@ export const App: React.FC = () => {
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('1h');
   const [bars, setBars] = useState<Bar[]>(() => getRealMarketBars('BTCUSDT', '1h'));
   const [activeScript, setActiveScript] = useState<string>(PINE_TEMPLATES[0].code);
+  const [activeStrategyId, setActiveStrategyId] = useState<string>(PINE_TEMPLATES[0].id);
+  const [strategyInputs, setStrategyInputs] = useState<Record<string, any>>({});
   const [strategies, setStrategies] = useState<PineScriptTemplate[]>(PINE_TEMPLATES);
   const [activeStrategiesFolder, setActiveStrategiesFolder] = useState<string>('strategies');
   const [backtestReport, setBacktestReport] = useState<BacktestReport | null>(null);
@@ -147,9 +149,24 @@ export const App: React.FC = () => {
     details: [],
   });
 
+  const [showTradesOnChart, setShowTradesOnChart] = useState<boolean>(true);
+  const [showLevelsOnChart, setShowLevelsOnChart] = useState<boolean>(true);
+
   const isPrefetchingRef = useRef<boolean>(false);
   const currentSymbolRef = useRef<string>('BTCUSDT');
   const currentTimeframeRef = useRef<Timeframe>('1h');
+  const activeStrategyIdRef = useRef<string>(PINE_TEMPLATES[0].id);
+  const strategyInputsRef = useRef<Record<string, any>>({});
+
+  activeStrategyIdRef.current = activeStrategyId;
+  strategyInputsRef.current = strategyInputs;
+
+  const handleFocusTrade = useCallback((trade: any) => {
+    const chart = (window as any).__velaChart;
+    if (chart) {
+      focusTradeOnChart(chart, trade);
+    }
+  }, []);
 
   // Load strategies from active folder & sync with disk in real time
   const loadStrategies = useCallback(async () => {
@@ -163,19 +180,35 @@ export const App: React.FC = () => {
           ...PINE_TEMPLATES.filter((b) => !folderIds.has(b.id)),
         ];
         setStrategies(combined);
+        return combined;
       } else {
         setStrategies(PINE_TEMPLATES);
+        return PINE_TEMPLATES;
       }
     } catch (err) {
       console.warn('Could not load folder strategies:', err);
+      return [];
     }
   }, []);
 
   useEffect(() => {
     loadStrategies();
-    const unsub = subscribeToStrategiesChanges(() => {
-      console.log('[App] Strategies changed on disk, refreshing strategy list...');
-      loadStrategies();
+    const unsub = subscribeToStrategiesChanges(async (data?: { event: string; filePath: string }) => {
+      console.log('[App] Strategies changed on disk, refreshing strategy list...', data);
+      const items = await loadStrategies();
+      if (data?.filePath && items) {
+        const currentId = activeStrategyIdRef.current;
+        const matching = items.find(
+          (t) => t.path === data.filePath || (t.filename && data.filePath.endsWith(t.filename))
+        );
+        if (matching && (matching.id === currentId || currentId.includes(matching.filename || ''))) {
+          setActiveScript(matching.code);
+          setCompilerLogs((prev) => [
+            ...prev,
+            `[Live Sync] File ${matching.filename} was updated on disk. Auto-recalculating strategy...`,
+          ]);
+        }
+      }
     });
     return unsub;
   }, [loadStrategies]);
@@ -203,6 +236,107 @@ export const App: React.FC = () => {
     },
     [loadStrategies]
   );
+
+  // Strategy Template Selection Handler
+  const handleSelectTemplate = useCallback(
+    (templateId: string) => {
+      setActiveStrategyId(templateId);
+      setStrategyInputs({});
+      const tmpl = strategies.find((t) => t.id === templateId);
+      if (tmpl) {
+        setActiveScript(tmpl.code);
+        if (bars.length > 0) {
+          try {
+            const { report, logs } = executePineBacktest(
+              tmpl.code,
+              currentSymbolRef.current,
+              currentTimeframeRef.current,
+              bars,
+              100000,
+              {}
+            );
+            setBacktestReport(report);
+            setCompilerLogs(logs);
+          } catch (err: any) {
+            console.warn('[Pine Backtest Error]', err);
+          }
+        }
+      }
+    },
+    [strategies, bars]
+  );
+
+  // Live parameter update handler with instant auto-recalculation
+  const handleUpdateStrategyParam = useCallback(
+    (paramId: string, value: any) => {
+      setStrategyInputs((prev) => {
+        const updated = { ...prev, [paramId]: value };
+        if (bars.length > 0) {
+          try {
+            const { report, logs } = executePineBacktest(
+              activeScript,
+              currentSymbolRef.current,
+              currentTimeframeRef.current,
+              bars,
+              100000,
+              updated
+            );
+            setBacktestReport(report);
+            setCompilerLogs(logs);
+          } catch (err: any) {
+            console.warn('[Pine Backtest Error]', err);
+          }
+        }
+        return updated;
+      });
+    },
+    [activeScript, bars]
+  );
+
+  // Reset strategy parameters handler
+  const handleResetStrategyParams = useCallback(() => {
+    setStrategyInputs({});
+    if (bars.length > 0) {
+      try {
+        const { report, logs } = executePineBacktest(
+          activeScript,
+          currentSymbolRef.current,
+          currentTimeframeRef.current,
+          bars,
+          100000,
+          {}
+        );
+        setBacktestReport(report);
+        setCompilerLogs(logs);
+      } catch (err: any) {
+        console.warn('[Pine Backtest Error]', err);
+      }
+    }
+  }, [activeScript, bars]);
+
+  // Debounced auto-recalculation when activeScript or bars change
+  useEffect(() => {
+    if (bars.length === 0) return;
+    const timer = setTimeout(() => {
+      try {
+        const { report, logs } = executePineBacktest(
+          activeScript,
+          currentSymbolRef.current,
+          currentTimeframeRef.current,
+          bars,
+          100000,
+          strategyInputsRef.current
+        );
+        setBacktestReport(report);
+        setCompilerLogs(logs);
+      } catch (err: any) {
+        console.warn('[Pine Debounce Auto-Recalc Notice]:', err);
+      }
+    }, 350);
+
+    return () => clearTimeout(timer);
+  }, [activeScript, bars]);
+
 
   // Keep refs updated
   currentSymbolRef.current = currentSymbol;
@@ -500,7 +634,9 @@ export const App: React.FC = () => {
           activeScript,
           currentSymbol,
           currentTimeframe,
-          bars
+          bars,
+          100000,
+          strategyInputsRef.current
         );
         setBacktestReport(report);
         setCompilerLogs(logs);
@@ -511,6 +647,7 @@ export const App: React.FC = () => {
       }
     }, 150);
   }, [bars, activeScript, currentSymbol, currentTimeframe]);
+
 
   // On-demand quote download into DuckDB
   const handleDownloadQuotes = async (symbol: string, source: 'binance' | 'yahoo', tf: string) => {
@@ -571,17 +708,12 @@ export const App: React.FC = () => {
         onSelectSymbol={handleSelectSymbol}
         onSelectTimeframe={handleSelectTimeframe}
         onRunBacktest={handleRunBacktest}
-        onOpenDataManager={() => {}}
-        onOpenPineEditor={() => {}}
         availableSymbols={INITIAL_SYMBOLS}
         isBacktesting={isBacktesting}
       />
 
-      {/* 2. Middle Main Workspace (Drawing Toolbar + Vela Chart + Watchlist) */}
+      {/* 2. Middle Main Workspace (Vela Chart + Watchlist) */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* Left Drawing Tools */}
-        <DrawingToolbar />
-
         {/* Center: LuxAlgo Vela WebGL2 Chart Canvas */}
         <main className="flex-1 h-full relative overflow-hidden bg-[#131722]">
           <VelaChart
@@ -589,6 +721,10 @@ export const App: React.FC = () => {
             timeframe={currentTimeframe}
             bars={bars}
             pineScript={activeScript}
+            trades={backtestReport?.trades}
+            strategyLevels={backtestReport?.strategyLevels}
+            showTradesOnChart={showTradesOnChart}
+            showLevelsOnChart={showLevelsOnChart}
             onIndicatorError={handleIndicatorError}
             onIndicatorSuccess={handleIndicatorSuccess}
             onPrefetchHistory={handlePrefetchHistory}
@@ -624,9 +760,18 @@ export const App: React.FC = () => {
         onRefreshStrategies={loadStrategies}
         onSaveStrategy={handleSaveStrategy}
         onChangeStrategiesDir={handleChangeStrategiesDir}
+        strategyInputs={strategyInputs}
+        onUpdateStrategyParam={handleUpdateStrategyParam}
+        onResetStrategyParams={handleResetStrategyParams}
+        onSelectTemplate={handleSelectTemplate}
+        selectedTemplateId={activeStrategyId}
+        showTradesOnChart={showTradesOnChart}
+        onToggleShowTrades={() => setShowTradesOnChart((p) => !p)}
+        onFocusTrade={handleFocusTrade}
       />
     </div>
   );
 };
+
 
 export default App;

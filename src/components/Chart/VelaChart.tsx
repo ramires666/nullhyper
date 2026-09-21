@@ -1,13 +1,18 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import { Vela } from '@luxalgo/vela';
 import { PineWorkerEngine } from '@luxalgo/vela-pinets';
-import type { Bar } from '../../types';
+import type { Bar, Trade, StrategyLevel } from '../../types';
+import { renderTradesAndLevelsOnChart } from '../../services/chartOverlayBridge';
 
 interface VelaChartProps {
   symbol: string;
   timeframe: string;
   bars: Bar[];
   pineScript?: string;
+  trades?: Trade[];
+  strategyLevels?: StrategyLevel[];
+  showTradesOnChart?: boolean;
+  showLevelsOnChart?: boolean;
   onIndicatorError?: (err: string) => void;
   onIndicatorSuccess?: (name: string) => void;
   onPrefetchHistory?: (oldestTimestamp: number) => Promise<void>;
@@ -18,6 +23,10 @@ export const VelaChart: React.FC<VelaChartProps> = ({
   timeframe,
   bars,
   pineScript,
+  trades,
+  strategyLevels,
+  showTradesOnChart = true,
+  showLevelsOnChart = true,
   onIndicatorError,
   onIndicatorSuccess,
   onPrefetchHistory,
@@ -25,6 +34,7 @@ export const VelaChart: React.FC<VelaChartProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<Vela | null>(null);
   const indicatorHandleRef = useRef<any>(null);
+  const overlayDrawingIdsRef = useRef<string[]>([]);
   const appliedScriptRef = useRef<string>('');
   const isPrefetchingRef = useRef<boolean>(false);
   const lastPrefetchedTimeRef = useRef<number>(0);
@@ -166,13 +176,27 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       if (pineScript && pineScript !== appliedScriptRef.current && chartInstanceRef.current) {
         if (indicatorHandleRef.current) {
           try {
-            (chartInstanceRef.current as any).removeIndicator?.(indicatorHandleRef.current);
+            indicatorHandleRef.current.remove?.();
           } catch {}
+          indicatorHandleRef.current = null;
         }
+        // Clean up any other script indicators to ensure no duplicate legend rows
+        try {
+          const existingIndicators = (chartInstanceRef.current as any).indicators?.() || [];
+          for (const ind of existingIndicators) {
+            if (ind && ind.source) {
+              try { ind.remove?.(); } catch {}
+            }
+          }
+        } catch {}
+
         try {
           indicatorHandleRef.current = (chartInstanceRef.current as any).addIndicator?.(pineScript);
           appliedScriptRef.current = pineScript;
+          onIndicatorSuccess?.();
         } catch (e) {
+          appliedScriptRef.current = pineScript;
+          onIndicatorError?.(e);
           console.warn('addIndicator update notice:', e);
         }
       }
@@ -199,6 +223,7 @@ export const VelaChart: React.FC<VelaChartProps> = ({
         theme: 'dark',
         animations: false,
         currentPriceLine: true,
+        drawings: false,
       });
 
       try {
@@ -208,8 +233,14 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       }
 
       chartInstanceRef.current = chart;
+      (window as any).__velaChart = chart;
       activeSymbolRef.current = symbol;
       activeTfRef.current = timeframe;
+
+      try {
+        (chart as any).drawings?.showToolbar?.(false);
+        (chart as any).drawingsControl?.showToolbar?.(false);
+      } catch {}
 
       try {
         chart.addNativeIndicator('volume');
@@ -222,14 +253,44 @@ export const VelaChart: React.FC<VelaChartProps> = ({
           const handle = chart.addIndicator(pineScript);
           indicatorHandleRef.current = handle;
           appliedScriptRef.current = pineScript;
+          onIndicatorSuccess?.();
         } catch (err: any) {
-          console.error('Pine Script Error:', err);
+          appliedScriptRef.current = pineScript;
+          onIndicatorError?.(err);
+          console.warn('Pine Script notice:', err);
         }
       }
     } catch (err) {
       console.error('Failed to initialize LuxAlgo Vela chart:', err);
     }
-  }, [symbol, timeframe, bars, pineScript]);
+  }, [symbol, timeframe, bars, pineScript, onIndicatorError, onIndicatorSuccess]);
+
+  // Synchronize Trade and Strategy Level Overlays on Chart Canvas
+  useEffect(() => {
+    const chart = chartInstanceRef.current;
+    if (!chart || !chart.drawings) return;
+
+    const timer = setTimeout(() => {
+      if (!chartInstanceRef.current?.drawings) return;
+      try {
+        const newIds = renderTradesAndLevelsOnChart(
+          chartInstanceRef.current,
+          trades || [],
+          strategyLevels || [],
+          {
+            showTrades: showTradesOnChart !== false,
+            showLevels: showLevelsOnChart !== false,
+          },
+          overlayDrawingIdsRef.current
+        );
+        overlayDrawingIdsRef.current = newIds;
+      } catch (err) {
+        console.warn('Overlay rendering notice:', err);
+      }
+    }, 60);
+
+    return () => clearTimeout(timer);
+  }, [trades, strategyLevels, showTradesOnChart, showLevelsOnChart, bars.length]);
 
   // Clean destruction on unmount
   useEffect(() => {

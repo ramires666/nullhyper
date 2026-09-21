@@ -77,6 +77,39 @@ export interface BacktestReport {
   maxConsecutiveLosses: number;
   trades: Trade[];
   equityCurve: EquityPoint[];
+  inputs?: PineInputParam[];
+  strategyType?: string;
+  strategyLevels?: StrategyLevel[];
+}
+
+export interface StrategyLevel {
+  id: string;
+  name: string;
+  type: 'box' | 'line';
+  startTime: number;
+  endTime: number;
+  price?: number;
+  highPrice?: number;
+  lowPrice?: number;
+  color: string;
+  lineStyle?: 'solid' | 'dashed' | 'dotted';
+}
+
+export type PineInputType = 'float' | 'int' | 'bool' | 'string' | 'session';
+
+export interface PineInputParam {
+  id: string;
+  varName: string;
+  type: PineInputType;
+  value: any;
+  defval: any;
+  title: string;
+  options?: (string | number)[];
+  minval?: number;
+  maxval?: number;
+  step?: number;
+  group?: string;
+  tooltip?: string;
 }
 
 export interface PineScriptTemplate {
@@ -89,3 +122,4 @@ export interface PineScriptTemplate {
   path?: string;
   source?: 'folder' | 'builtin';
 }
+

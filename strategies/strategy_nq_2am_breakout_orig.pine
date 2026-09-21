@@ -1,0 +1,423 @@
+//@version=6
+strategy("NQ 2:00 AM NY Breakout Strategy [v6]",
+         overlay=true,
+         initial_capital=50000,
+         default_qty_type=strategy.fixed,
+         default_qty_value=1,
+         currency=currency.USD,
+         commission_type=strategy.commission.cash_per_contract,
+         commission_value=2.05,
+         slippage=1,
+         process_orders_on_close=true)
+
+// =============================================================================
+// НАСТРОЙКИ СТРАТЕГИИ (INPUTS)
+// =============================================================================
+
+// --- Секция: Параметры свечи 02:00 NY ---
+group_candle = "Опорная свеча (02:00 New York)"
+ref_mode = input.string("1-Hour Range (02:00 - 03:00 NY)", "Режим опорной свечи",
+                        options=["1-Hour Range (02:00 - 03:00 NY)", "Single Bar at 02:00 NY"],
+                        group=group_candle,
+                        tooltip="1-Hour Range: фиксирует High и Low за весь час 02:00-03:00 NY (подходит для любого таймфрейма: 1m, 5m, 15m).\nSingle Bar: берет только первый бар, открывшийся ровно в 02:00 NY.")
+
+// Источник диапазона (Range Source / ATR)
+use_atr_range = input.bool(false, "Брать диапазон как % от ATR", group=group_candle,
+                           tooltip="Если включено, размер диапазона берется как процент от индикатора ATR вместо разницы High - Low свечи.")
+atr_len       = input.int(14, "Период ATR", minval=1, group=group_candle,
+                          tooltip="Период для расчета ATR на текущем графике.")
+atr_pct       = input.float(100.0, "Процент от ATR (%)", minval=1.0, step=5.0, group=group_candle,
+                            tooltip="Процент от значения ATR (например, 100% = 1.0x ATR, 50% = 0.5x ATR, 150% = 1.5x ATR).")
+
+// Центр отсчета диапазона (Center Anchor)
+center_mode   = input.string("High / Low (Классический)", "Центр отсчета диапазона",
+                             options=["High / Low (Классический)", "Середина тела свечи (Body Midpoint)", "Уровень VWAP", "Середина свечи (High + Low) / 2"],
+                             group=group_candle,
+                             tooltip="Выбор точки отсчета для границ диапазона и линий пробоя:\n- High / Low: классический расчет (верх от High, низ от Low).\n- Середина тела свечи: центр = (Open + Close) / 2, границы строятся симметрично вокруг тела.\n- Уровень VWAP: центр свечи фиксируется на текущем уровне VWAP.\n- Середина свечи: центр = (High + Low) / 2.")
+
+// --- Секция: Линии пробоя (Offset Multiplier) ---
+group_offset = "Линии пробоя (Канал)"
+range_mult = input.float(1.0, "Множитель диапазона (Offset Multiplier)", minval=0.0, step=0.05,
+                         group=group_offset,
+                         tooltip="Коэффициент умножения диапазона свечи (Range).\nВерхняя линия = High + (Range * Multiplier)\nНижняя линия = Low - (Range * Multiplier)\nПри использовании центра (Body Midpoint / VWAP), High = Center + Range/2, Low = Center - Range/2.")
+
+// --- Секция: Стоп-лосс ---
+group_sl = "Управление Стоп-Лоссом"
+sl_mode = input.string("2x Candle Range (от входа)", "Метод расчета Стоп-Лосса",
+                       options=["2x Candle Range (от входа)", "За противоположную линию канала", "Диапазон канала (Channel Span)"],
+                       group=group_sl,
+                       tooltip="1) 2x Candle Range: стоп на расстоянии 2x размера свечи + буфер.\n2) За противоположную линию: для Long стоп ставится за Нижнюю линию канала + буфер.\n3) Диапазон канала: ширина всего канала + буфер.")
+sl_multiplier = input.float(2.0, "Множитель размера свечи для SL", minval=0.5, step=0.1,
+                            group=group_sl,
+                            tooltip="Базовый множитель свечи для SL (по умолчанию 2.0 = двойной размер свечи).")
+sl_buffer_pct = input.float(0.1, "Дополнительный буфер SL (в долях Range)", minval=0.0, step=0.05,
+                            group=group_sl,
+                            tooltip="Небольшой запас ('чуть дальше') за границу, выраженный в долях от диапазона свечи (0.1 = 10% от Range).")
+
+// --- Секция: Исполнение и Торговые ограничения ---
+group_exec = "Исполнение и правила"
+entry_type = input.string("Stop Order (мгновенный пробой)", "Тип входа",
+                          options=["Stop Order (мгновенный пробой)", "Bar Close (по закрытию бара)"],
+                          group=group_exec,
+                          tooltip="Stop Order: отложенный стоп-ордер прямо на линии, вход тиком в момент касания/пробития.\nBar Close: вход только после закрытия бара за линией.")
+max_one_trade = input.bool(true, "Максимум 1 сделка в день",
+                           group=group_exec,
+                           tooltip="Если включено, стратегия открывает не более одной позиции за торговую сессию.")
+use_tp = input.bool(false, "Использовать Take Profit",
+                    group=group_exec,
+                    tooltip="Опциональный тейк-профит (по умолчанию выключен, закрытие происходит по SL или в 09:00 NY).")
+tp_rr = input.float(2.0, "Take Profit (множитель к SL)", minval=0.5, step=0.5,
+                    group=group_exec,
+                    tooltip="Соотношение Risk/Reward для Take Profit.")
+
+// --- Секция: Визуализация ---
+group_vis = "Отображение на графике"
+show_lines     = input.bool(true, "Показывать линии пробоя", group=group_vis)
+show_candle_hl = input.bool(true, "Показывать границы диапазона 2:00 (High/Low)", group=group_vis)
+show_center    = input.bool(true, "Показывать центральную линию диапазона", group=group_vis)
+show_vwap      = input.bool(true, "Показывать VWAP", group=group_vis)
+show_channel   = input.bool(true, "Заливка канала", group=group_vis)
+show_session   = input.bool(true, "Подсветка сессий (02:00 и Торговое окно)", group=group_vis)
+show_hud       = input.bool(true, "Информационная таблица (HUD)", group=group_vis)
+
+// =============================================================================
+// ВРЕМЕННЫЕ ЗОНЫ И РАСЧЕТ СЕССИИ (NEW YORK TIME)
+// =============================================================================
+
+var string NY_TZ = "America/New_York"
+
+// Определение смены торгового дня в Нью-Йорке (в v6 используем явный таймфрейм "1D")
+bool ny_day_change = ta.change(time("1D", NY_TZ)) != 0
+
+// Текущее время в Нью-Йорке
+int ny_hour   = hour(time, NY_TZ)
+int ny_minute = minute(time, NY_TZ)
+
+// Флаги времени (строгие булевы типы в Pine Script v6)
+// 1. Часовой диапазон 02:00 - 03:00 NY
+bool in_hour_2am_window = not na(time(timeframe.period, "0200-0300:1234567", NY_TZ))
+// 2. Точный бар в 02:00 NY
+bool is_exact_2am_bar = (ny_hour == 2 and ny_minute == 0)
+
+// 3. Торговое окно: с 03:00 NY до 09:00 NY
+bool in_trade_window = not na(time(timeframe.period, "0300-0900:1234567", NY_TZ))
+
+// 4. Принудительное закрытие в 09:00 NY (с 09:00 и далее)
+bool is_at_or_after_9am = (ny_hour >= 9)
+
+// =============================================================================
+// ТЕХНИЧЕСКИЕ ИНДИКАТОРЫ (РАССЧИТЫВАЮТСЯ НА КАЖДОМ БАРЕ ГЛОБАЛЬНО)
+// =============================================================================
+
+float current_atr  = ta.atr(atr_len)
+float current_vwap = not na(ta.vwap) ? ta.vwap : hlc3
+
+// =============================================================================
+// ПЕРЕМЕННЫЕ СОСТОЯНИЯ (STATE VARIABLES)
+// =============================================================================
+
+var float ref_raw_high  = na
+var float ref_raw_low   = na
+var float ref_open      = na
+var float ref_close     = na
+var float ref_vwap      = na
+var float ref_center    = na
+var float ref_high      = na
+var float ref_low       = na
+var float ref_range     = na
+var float upper_trigger = na
+var float lower_trigger = na
+var bool  ref_ready     = false
+var bool  traded_today  = false
+
+var float long_sl_price  = na
+var float short_sl_price = na
+var float long_tp_price  = na
+var float short_tp_price = na
+
+// Сброс состояния в начале каждого нового дня NY
+if ny_day_change
+    ref_raw_high   := na
+    ref_raw_low    := na
+    ref_open       := na
+    ref_close      := na
+    ref_vwap       := na
+    ref_center     := na
+    ref_high       := na
+    ref_low        := na
+    ref_range      := na
+    upper_trigger  := na
+    lower_trigger  := na
+    ref_ready      := false
+    traded_today   := false
+    long_sl_price  := na
+    short_sl_price := na
+    long_tp_price  := na
+    short_tp_price := na
+
+// =============================================================================
+// ОПРЕДЕЛЕНИЕ СВЕЧИ 02:00 NY И РАСЧЕТ ЛИНИЙ
+// =============================================================================
+
+if ref_mode == "1-Hour Range (02:00 - 03:00 NY)"
+    // Накапливаем High, Low, Open, Close и VWAP за весь интервал 02:00 - 03:00 NY
+    if in_hour_2am_window
+        if na(ref_raw_high)
+            ref_raw_high := high
+            ref_raw_low  := low
+            ref_open     := open
+        else
+            ref_raw_high := math.max(ref_raw_high, high)
+            ref_raw_low  := math.min(ref_raw_low, low)
+        ref_close := close
+        ref_vwap  := current_vwap
+    
+    // В момент перехода из 02:00-03:00 в 03:00 фиксируем уровни
+    if not ref_ready and not in_hour_2am_window and not na(ref_raw_high) and (ny_hour >= 3 and ny_hour < 9)
+        float raw_range = ref_raw_high - ref_raw_low
+        ref_range := use_atr_range ? (current_atr * (atr_pct / 100.0)) : raw_range
+
+        if center_mode == "Середина тела свечи (Body Midpoint)"
+            ref_center := (ref_open + ref_close) / 2.0
+            ref_high   := ref_center + (ref_range / 2.0)
+            ref_low    := ref_center - (ref_range / 2.0)
+        else if center_mode == "Уровень VWAP"
+            ref_center := ref_vwap
+            ref_high   := ref_center + (ref_range / 2.0)
+            ref_low    := ref_center - (ref_range / 2.0)
+        else if center_mode == "Середина свечи (High + Low) / 2"
+            ref_center := (ref_raw_high + ref_raw_low) / 2.0
+            ref_high   := ref_center + (ref_range / 2.0)
+            ref_low    := ref_center - (ref_range / 2.0)
+        else // "High / Low (Классический)"
+            ref_center := (ref_raw_high + ref_raw_low) / 2.0
+            ref_high   := ref_raw_high
+            ref_low    := ref_raw_low
+
+        float offset  = ref_range * range_mult
+        upper_trigger := ref_high + offset
+        lower_trigger := ref_low - offset
+        ref_ready     := true
+
+else // "Single Bar at 02:00 NY"
+    if is_exact_2am_bar and not ref_ready
+        ref_raw_high := high
+        ref_raw_low  := low
+        ref_open     := open
+        ref_close    := close
+        ref_vwap     := current_vwap
+
+        float raw_range = high - low
+        ref_range := use_atr_range ? (current_atr * (atr_pct / 100.0)) : raw_range
+
+        if center_mode == "Середина тела свечи (Body Midpoint)"
+            ref_center := (ref_open + ref_close) / 2.0
+            ref_high   := ref_center + (ref_range / 2.0)
+            ref_low    := ref_center - (ref_range / 2.0)
+        else if center_mode == "Уровень VWAP"
+            ref_center := ref_vwap
+            ref_high   := ref_center + (ref_range / 2.0)
+            ref_low    := ref_center - (ref_range / 2.0)
+        else if center_mode == "Середина свечи (High + Low) / 2"
+            ref_center := (high + low) / 2.0
+            ref_high   := ref_center + (ref_range / 2.0)
+            ref_low    := ref_center - (ref_range / 2.0)
+        else // "High / Low (Классический)"
+            ref_center := (high + low) / 2.0
+            ref_high   := high
+            ref_low    := low
+
+        float offset  = ref_range * range_mult
+        upper_trigger := ref_high + offset
+        lower_trigger := ref_low - offset
+        ref_ready     := true
+
+// =============================================================================
+// РАСЧЕТ УРОВНЕЙ СТОП-ЛОССА (STOP LOSS CALCULATION)
+// =============================================================================
+
+if ref_ready and not na(ref_range)
+    float buffer = ref_range * sl_buffer_pct
+
+    if sl_mode == "2x Candle Range (от входа)"
+        // Стоп-лосс на базе двойного размера свечи + буфер от точки пробоя
+        float sl_distance = (ref_range * sl_multiplier) + buffer
+        long_sl_price  := upper_trigger - sl_distance
+        short_sl_price := lower_trigger + sl_distance
+
+    else if sl_mode == "За противоположную линию канала"
+        // Стоп-лосс чуть дальше противоположной границы канала
+        long_sl_price  := lower_trigger - buffer
+        short_sl_price := upper_trigger + buffer
+
+    else if sl_mode == "Диапазон канала (Channel Span)"
+        // Стоп-лосс на ширину всего канала + буфер
+        float channel_span = (upper_trigger - lower_trigger) + buffer
+        long_sl_price  := upper_trigger - channel_span
+        short_sl_price := lower_trigger + channel_span
+
+    // Опциональный Take Profit на основе расстояния до SL
+    if use_tp
+        float long_risk  = upper_trigger - long_sl_price
+        float short_risk = short_sl_price - lower_trigger
+        long_tp_price  := upper_trigger + (long_risk * tp_rr)
+        short_tp_price := lower_trigger - (short_risk * tp_rr)
+
+// =============================================================================
+// ТОРГОВАЯ ЛОГИКА (ВХОД И ВЫХОД)
+// =============================================================================
+
+// Проверка доступности торговли:
+// 1. Опорная свеча сформирована
+// 2. Время строго до 09:00 NY
+// 3. Позиция еще не открыта и лимит на день не исчерпан
+bool can_enter = ref_ready and not is_at_or_after_9am and (max_one_trade ? not traded_today : true) and (strategy.position_size == 0)
+
+// --- ВХОД В ПОЗИЦИЮ (ENTRY) ---
+if can_enter
+    if entry_type == "Stop Order (мгновенный пробой)"
+        // Выставляем отложенные стоп-ордера на границы пробоя
+        strategy.entry("Long", strategy.long, stop=upper_trigger, comment="Long Breakout")
+        strategy.entry("Short", strategy.short, stop=lower_trigger, comment="Short Breakout")
+    else
+        // Вход по закрытию бара выше/ниже линии
+        if ta.crossover(close, upper_trigger)
+            strategy.entry("Long", strategy.long, comment="Long Close Breakout")
+        else if ta.crossunder(close, lower_trigger)
+            strategy.entry("Short", strategy.short, comment="Short Close Breakout")
+
+// Фиксация факта совершения сделки
+if strategy.position_size != 0
+    traded_today := true
+
+// --- ВЫСТАВЛЕНИЕ ЗАЩИТНЫХ ОРДЕРОВ (STOP LOSS & TAKE PROFIT) ---
+if strategy.position_size > 0
+    strategy.exit("Exit Long", from_entry="Long",
+                  stop=long_sl_price,
+                  limit=use_tp ? long_tp_price : na,
+                  comment_loss="SL Long Hit",
+                  comment_profit="TP Long Hit")
+
+if strategy.position_size < 0
+    strategy.exit("Exit Short", from_entry="Short",
+                  stop=short_sl_price,
+                  limit=use_tp ? short_tp_price : na,
+                  comment_loss="SL Short Hit",
+                  comment_profit="TP Short Hit")
+
+// --- ПРИНУДИТЕЛЬНОЕ ЗАКРЫТИЕ В 09:00 NY ---
+if is_at_or_after_9am
+    // Если есть открытая позиция — принудительно ликвидируем в 9:00
+    if strategy.position_size != 0
+        strategy.close_all(comment="Exit at 09:00 NY")
+    
+    // Отменяем все неисполненные отложенные стоп-ордера
+    strategy.cancel("Long")
+    strategy.cancel("Short")
+
+// =============================================================================
+// ВИЗУАЛИЗАЦИЯ И ГРАФИКА (PLOTTING)
+// =============================================================================
+
+// Условие активности торговой сессии для отрисовки линий (с момента готовности до 09:00 NY)
+bool active_session = ref_ready and not is_at_or_after_9am
+
+// Визуализация индикатора VWAP (на всех барах)
+plot(show_vwap ? current_vwap : na, "VWAP", color=color.new(#ab47bc, 0), linewidth=2)
+
+// Центральная линия диапазона (Midpoint / VWAP)
+plot_center = (show_center and active_session and not na(ref_center) and center_mode != "High / Low (Классический)") ? ref_center : na
+plot(plot_center, "Range Center", color=color.new(#ffeb3b, 0), linewidth=1, style=plot.style_linebr)
+
+// Линии пробоя
+plot_upper = (show_lines and active_session) ? upper_trigger : na
+plot_lower = (show_lines and active_session) ? lower_trigger : na
+plot_ref_h = (show_candle_hl and active_session) ? ref_high : na
+plot_ref_l = (show_candle_hl and active_session) ? ref_low : na
+
+p_up = plot(plot_upper, "Upper Trigger Line", color=color.new(#089981, 0), linewidth=2, style=plot.style_linebr)
+p_lo = plot(plot_lower, "Lower Trigger Line", color=color.new(#f23645, 0), linewidth=2, style=plot.style_linebr)
+
+// Линии границ опорного диапазона 2:00 NY
+p_rh = plot(plot_ref_h, "2AM High", color=color.new(color.gray, 30), linewidth=1, style=plot.style_linebr)
+p_rl = plot(plot_ref_l, "2AM Low",  color=color.new(color.gray, 30), linewidth=1, style=plot.style_linebr)
+
+// Заливка канала
+fill(p_up, p_lo, color=show_channel and active_session ? color.new(#2962ff, 93) : na, title="Channel Fill")
+
+// Отображение активного стоп-лосса при открытой позиции
+plot_sl = strategy.position_size > 0 ? long_sl_price : (strategy.position_size < 0 ? short_sl_price : na)
+plot(plot_sl, "Active Stop Loss", color=color.new(#ff9800, 0), linewidth=2, style=plot.style_circles)
+
+// Подсветка фона сессий
+bool is_2am_window = (ref_mode == "1-Hour Range (02:00 - 03:00 NY)") ? in_hour_2am_window : is_exact_2am_bar
+bgcolor(show_session and is_2am_window ? color.new(color.yellow, 93) : na, title="2:00 AM Candle Highlight")
+bgcolor(show_session and active_session and not is_2am_window ? color.new(color.blue, 96) : na, title="Active Trade Window Highlight")
+
+// =============================================================================
+// ИНФОРМАЦИОННАЯ ТАБЛИЦА (DASHBOARD HUD)
+// =============================================================================
+
+var table hud = table.new(position.top_right, 2, 8, bgcolor=color.new(color.black, 20), border_color=color.gray, border_width=1)
+
+if show_hud and barstate.islast
+    // Форматирование времени NY
+    string time_str = str.format("{0,number,00}:{1,number,00} NY", ny_hour, ny_minute)
+    
+    // Статус
+    string status_str = "Ожидание 02:00"
+    color status_col  = color.gray
+    if is_at_or_after_9am
+        status_str := "Сессия закрыта (>= 09:00)"
+        status_col := color.orange
+    else if strategy.position_size != 0
+        status_str := strategy.position_size > 0 ? "В позиции: LONG" : "В позиции: SHORT"
+        status_col := strategy.position_size > 0 ? color.green : color.red
+    else if ref_ready
+        status_str := "Ожидание пробоя"
+        status_col := color.blue
+    else if is_2am_window
+        status_str := "Формирование 2:00"
+        status_col := color.yellow
+
+    // Подпись диапазона
+    string range_str = "—"
+    if not na(ref_range)
+        range_str := use_atr_range ? str.format("{0,number,#.##} pts (ATR {1,number,#}%)", ref_range, atr_pct) : str.format("{0,number,#.##} pts", ref_range)
+
+    // Подпись центра
+    string center_str = "—"
+    if not na(ref_center)
+        if center_mode == "Середина тела свечи (Body Midpoint)"
+            center_str := str.format("{0,number,#.##} (Тело)", ref_center)
+        else if center_mode == "Уровень VWAP"
+            center_str := str.format("{0,number,#.##} (VWAP)", ref_center)
+        else if center_mode == "Середина свечи (High + Low) / 2"
+            center_str := str.format("{0,number,#.##} (Mid)", ref_center)
+        else
+            center_str := str.format("{0,number,#.##} (H/L)", ref_center)
+
+    table.cell(hud, 0, 0, "Время NY", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 0, time_str, text_color=color.yellow, text_size=size.small)
+
+    table.cell(hud, 0, 1, "Статус", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 1, status_str, text_color=status_col, text_size=size.small)
+
+    table.cell(hud, 0, 2, "2:00 Range", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 2, range_str, text_color=color.white, text_size=size.small)
+
+    table.cell(hud, 0, 3, "Центр", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 3, center_str, text_color=color.yellow, text_size=size.small)
+
+    table.cell(hud, 0, 4, "Upper Line", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 4, not na(upper_trigger) ? str.format("{0,number,#.##}", upper_trigger) : "—", text_color=color.green, text_size=size.small)
+
+    table.cell(hud, 0, 5, "Lower Line", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 5, not na(lower_trigger) ? str.format("{0,number,#.##}", lower_trigger) : "—", text_color=color.red, text_size=size.small)
+
+    table.cell(hud, 0, 6, "Stop Loss", text_color=color.white, text_size=size.small)
+    string sl_display = strategy.position_size > 0 ? str.format("{0,number,#.##}", long_sl_price) : (strategy.position_size < 0 ? str.format("{0,number,#.##}", short_sl_price) : "Готов к расчету")
+    table.cell(hud, 1, 6, sl_display, text_color=color.orange, text_size=size.small)
+
+    table.cell(hud, 0, 7, "Сделок сегодня", text_color=color.white, text_size=size.small)
+    table.cell(hud, 1, 7, traded_today ? "1 (Лимит исчерпан)" : "0", text_color=traded_today ? color.orange : color.white, text_size=size.small)

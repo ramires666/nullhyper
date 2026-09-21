@@ -41,6 +41,12 @@ html, body, #root {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Hide Vela left drawing toolbar */
+.vela-dtb,
+.vela-ws-toolbar {
+  display: none !important;
+}
+
 /* Base HTML resets to prevent browser-default white buttons & inputs */
 button {
   background: transparent;
