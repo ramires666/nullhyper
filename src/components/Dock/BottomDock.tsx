@@ -18,13 +18,8 @@ import {
   FolderOpen,
   Save,
   Settings,
-  Sliders,
-  RotateCcw,
-  HelpCircle,
-  X,
-  Check,
 } from 'lucide-react';
-import type { BacktestReport, PineScriptTemplate, PineInputParam } from '../../types';
+import type { BacktestReport, PineScriptTemplate } from '../../types';
 import { PINE_TEMPLATES } from '../../services/pineTemplates';
 import {
   executeDuckDBSQL,
@@ -59,6 +54,8 @@ interface BottomDockProps {
   showTradesOnChart?: boolean;
   onToggleShowTrades?: () => void;
   onFocusTrade?: (trade: any) => void;
+  isSettingsOpen?: boolean;
+  onToggleSettings?: (open: boolean) => void;
 }
 
 
@@ -84,14 +81,16 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onRefreshStrategies,
   onSaveStrategy,
   onChangeStrategiesDir,
-  strategyInputs = {},
-  onUpdateStrategyParam,
-  onResetStrategyParams,
+  strategyInputs: _strategyInputs = {},
+  onUpdateStrategyParam: _onUpdateStrategyParam,
+  onResetStrategyParams: _onResetStrategyParams,
   onSelectTemplate,
   selectedTemplateId,
   showTradesOnChart = true,
   onToggleShowTrades,
   onFocusTrade,
+  isSettingsOpen,
+  onToggleSettings,
 }) => {
   const [activeTab, setActiveTab] = useState<DockTab>('tester');
   const [testerSubTab, setTesterSubTab] = useState<TesterSubTab>('overview');
@@ -99,7 +98,10 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   const [isMaximized, setIsMaximized] = useState(false);
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
-  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const isSettingsModalOpen = Boolean(isSettingsOpen);
+  const setIsSettingsModalOpen = (open: boolean) => {
+    onToggleSettings?.(open);
+  };
   const [saveFilename, setSaveFilename] = useState('strategy_custom.pine');
   const [customDirInput, setCustomDirInput] = useState('');
   const [isSavingScript, setIsSavingScript] = useState(false);
@@ -183,6 +185,9 @@ export const BottomDock: React.FC<BottomDockProps> = ({
     if (tmpl) {
       onChangeScript(tmpl.code);
     }
+    if (onSelectTemplate) {
+      onSelectTemplate(templateId);
+    }
   };
 
   const handleConfirmSave = async () => {
@@ -233,20 +238,20 @@ export const BottomDock: React.FC<BottomDockProps> = ({
       />
 
       {/* Dock Header Tabs */}
-      <div className="h-9 px-3 flex items-center justify-between border-b border-[#2a2e39] text-xs font-semibold bg-[#1a1e28]">
-        <div className="flex items-center space-x-1">
+      <div className="h-10 px-3.5 flex items-center justify-between border-b border-[#2a2e39] text-sm font-semibold bg-[#1a1e28]">
+        <div className="flex items-center space-x-1.5">
           <button
             onClick={() => {
               setActiveTab('editor');
               setIsCollapsed(false);
             }}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 border-b-2 transition-all ${
+            className={`flex items-center space-x-2 px-3.5 py-2 border-b-2 transition-all ${
               activeTab === 'editor' && !isCollapsed
                 ? 'border-blue-500 text-white bg-[#2a2e39]'
                 : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
           >
-            <Code size={13} className="text-blue-400" />
+            <Code size={15} className="text-blue-400" />
             <span>Pine Editor v6</span>
           </button>
 
@@ -255,17 +260,17 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               setActiveTab('tester');
               setIsCollapsed(false);
             }}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 border-b-2 transition-all ${
+            className={`flex items-center space-x-2 px-3.5 py-2 border-b-2 transition-all ${
               activeTab === 'tester' && !isCollapsed
                 ? 'border-emerald-500 text-white bg-[#2a2e39]'
                 : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
           >
-            <LineChart size={13} className="text-emerald-400" />
+            <LineChart size={15} className="text-emerald-400" />
             <span>Strategy Tester</span>
             {backtestReport && (
               <span
-                className={`ml-1 px-1.5 py-0.2 text-[10px] rounded font-bold ${
+                className={`ml-1.5 px-2 py-0.5 text-xs rounded font-bold ${
                   backtestReport.netProfit >= 0 ? 'bg-emerald-950 text-emerald-400' : 'bg-rose-950 text-rose-400'
                 }`}
               >
@@ -279,13 +284,13 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               setActiveTab('datamanager');
               setIsCollapsed(false);
             }}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 border-b-2 transition-all ${
+            className={`flex items-center space-x-2 px-3.5 py-2 border-b-2 transition-all ${
               activeTab === 'datamanager' && !isCollapsed
                 ? 'border-amber-500 text-white bg-[#2a2e39]'
                 : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
           >
-            <Database size={13} className="text-amber-400" />
+            <Database size={15} className="text-amber-400" />
             <span>Data Manager</span>
           </button>
 
@@ -294,16 +299,16 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               setActiveTab('logs');
               setIsCollapsed(false);
             }}
-            className={`flex items-center space-x-1.5 px-3 py-1.5 border-b-2 transition-all ${
+            className={`flex items-center space-x-2 px-3.5 py-2 border-b-2 transition-all ${
               activeTab === 'logs' && !isCollapsed
                 ? 'border-indigo-500 text-white bg-[#2a2e39]'
                 : 'border-transparent text-gray-400 hover:text-gray-200'
             }`}
           >
-            <Terminal size={13} className="text-indigo-400" />
+            <Terminal size={15} className="text-indigo-400" />
             <span>Console</span>
             {compilerLogs.length > 0 && (
-              <span className="ml-1 text-[10px] text-gray-400 font-mono">({compilerLogs.length})</span>
+              <span className="ml-1.5 text-xs text-gray-400 font-mono">({compilerLogs.length})</span>
             )}
           </button>
         </div>
@@ -401,8 +406,10 @@ export const BottomDock: React.FC<BottomDockProps> = ({
 
                   {/* Strategy Settings (Inputs) Button */}
                   <button
-                    onClick={() => setIsSettingsModalOpen(true)}
-                    className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-[#202533] hover:bg-[#2a3042] text-gray-200 border border-[#2e3446] hover:border-blue-500/50 transition-all text-xs font-semibold"
+                    onClick={() => setIsSettingsModalOpen(!isSettingsModalOpen)}
+                    className={`flex items-center space-x-1.5 px-2.5 py-1 rounded ${
+                      isSettingsModalOpen ? 'bg-blue-600/40 text-blue-200 border-blue-500/60' : 'bg-[#202533] hover:bg-[#2a3042] text-gray-200 border-[#2e3446]'
+                    } hover:border-blue-500/50 transition-all text-xs font-semibold`}
                     title="Open Strategy Inputs & Settings (TradingView ⚙️ Style)"
                   >
                     <Settings size={12} className="text-blue-400" />
@@ -465,16 +472,16 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               {backtestReport ? (
                 <>
                   {/* KPI Summary Bar */}
-                  <div className="flex-shrink-0 bg-[#1e222d] px-4 py-2 border-b border-[#2a2e39] flex items-center justify-between overflow-x-auto text-xs min-w-0">
+                  <div className="flex-shrink-0 bg-[#1e222d] px-4 py-2.5 border-b border-[#2a2e39] flex items-center justify-between overflow-x-auto text-sm min-w-0">
                     <div className="flex items-center space-x-6 flex-shrink-0">
                       <div>
-                        <span className="text-[10px] text-gray-400 block">NET PROFIT</span>
+                        <span className="text-xs text-gray-400 block tracking-wider font-semibold uppercase mb-0.5">NET PROFIT</span>
                         <span
-                          className={`text-sm font-bold flex items-center space-x-1 ${
+                          className={`text-base font-bold flex items-center space-x-1.5 ${
                             backtestReport.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
                           }`}
                         >
-                          {backtestReport.netProfit >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                          {backtestReport.netProfit >= 0 ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
                           <span>
                             ${backtestReport.netProfit.toLocaleString()} ({backtestReport.netProfitPercent >= 0 ? '+' : ''}
                             {backtestReport.netProfitPercent}%)
@@ -483,61 +490,61 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                       </div>
 
                       <div>
-                        <span className="text-[10px] text-gray-400 block">TOTAL TRADES</span>
-                        <span className="text-sm font-bold text-white">{backtestReport.totalTrades}</span>
+                        <span className="text-xs text-gray-400 block tracking-wider font-semibold uppercase mb-0.5">TOTAL TRADES</span>
+                        <span className="text-base font-bold text-white">{backtestReport.totalTrades}</span>
                       </div>
 
                       <div>
-                        <span className="text-[10px] text-gray-400 block">WIN RATE</span>
-                        <span className="text-sm font-bold text-emerald-400">{backtestReport.winRate}%</span>
+                        <span className="text-xs text-gray-400 block tracking-wider font-semibold uppercase mb-0.5">WIN RATE</span>
+                        <span className="text-base font-bold text-emerald-400">{backtestReport.winRate}%</span>
                       </div>
 
                       <div>
-                        <span className="text-[10px] text-gray-400 block">PROFIT FACTOR</span>
-                        <span className="text-sm font-bold text-indigo-400">{backtestReport.profitFactor}</span>
+                        <span className="text-xs text-gray-400 block tracking-wider font-semibold uppercase mb-0.5">PROFIT FACTOR</span>
+                        <span className="text-base font-bold text-indigo-400">{backtestReport.profitFactor}</span>
                       </div>
 
                       <div>
-                        <span className="text-[10px] text-gray-400 block">MAX DRAWDOWN</span>
-                        <span className="text-sm font-bold text-rose-400">
+                        <span className="text-xs text-gray-400 block tracking-wider font-semibold uppercase mb-0.5">MAX DRAWDOWN</span>
+                        <span className="text-base font-bold text-rose-400">
                           ${backtestReport.maxDrawdown.toLocaleString()} ({backtestReport.maxDrawdownPercent}%)
                         </span>
                       </div>
 
                       <div>
-                        <span className="text-[10px] text-gray-400 block">SHARPE RATIO</span>
-                        <span className="text-sm font-bold text-gray-200">{backtestReport.sharpeRatio}</span>
+                        <span className="text-xs text-gray-400 block tracking-wider font-semibold uppercase mb-0.5">SHARPE RATIO</span>
+                        <span className="text-base font-bold text-gray-200">{backtestReport.sharpeRatio}</span>
                       </div>
                     </div>
 
                     {/* Subtabs: Overview | Trades | Metrics */}
-                    <div className="flex items-center space-x-1 bg-[#131722] p-0.5 rounded border border-[#2a2e39] flex-shrink-0 ml-3">
+                    <div className="flex items-center space-x-1 bg-[#131722] p-1 rounded-md border border-[#2a2e39] flex-shrink-0 ml-3">
                       <button
                         onClick={() => setTesterSubTab('overview')}
-                        className={`px-2.5 py-1 rounded text-xs transition-all ${
+                        className={`px-3 py-1.5 rounded-md text-xs transition-all ${
                           testerSubTab === 'overview'
-                            ? 'bg-blue-600 text-white font-semibold'
-                            : 'text-gray-400 hover:text-white'
+                            ? 'bg-blue-600 text-white font-bold shadow-sm'
+                            : 'text-gray-400 hover:text-white font-medium'
                         }`}
                       >
                         Equity Curve
                       </button>
                       <button
                         onClick={() => setTesterSubTab('trades')}
-                        className={`px-2.5 py-1 rounded text-xs transition-all ${
+                        className={`px-3 py-1.5 rounded-md text-xs transition-all ${
                           testerSubTab === 'trades'
-                            ? 'bg-blue-600 text-white font-semibold'
-                            : 'text-gray-400 hover:text-white'
+                            ? 'bg-blue-600 text-white font-bold shadow-sm'
+                            : 'text-gray-400 hover:text-white font-medium'
                         }`}
                       >
                         List of Trades ({backtestReport.trades.length})
                       </button>
                       <button
                         onClick={() => setTesterSubTab('metrics')}
-                        className={`px-2.5 py-1 rounded text-xs transition-all ${
+                        className={`px-3 py-1.5 rounded-md text-xs transition-all ${
                           testerSubTab === 'metrics'
-                            ? 'bg-blue-600 text-white font-semibold'
-                            : 'text-gray-400 hover:text-white'
+                            ? 'bg-blue-600 text-white font-bold shadow-sm'
+                            : 'text-gray-400 hover:text-white font-medium'
                         }`}
                       >
                         Performance Metrics
@@ -547,13 +554,13 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                     {/* Parameters Button in Tester */}
                     <button
                       onClick={() => setIsSettingsModalOpen(true)}
-                      className="flex items-center space-x-1.5 px-2.5 py-1 rounded bg-[#1b202c] hover:bg-[#252b3b] text-gray-200 border border-[#2b3345] hover:border-emerald-500/60 transition-all text-xs font-semibold ml-2 flex-shrink-0"
+                      className="flex items-center space-x-2 px-3 py-1.5 rounded-md bg-[#1b202c] hover:bg-[#252b3b] text-gray-200 border border-[#2b3345] hover:border-emerald-500/60 transition-all text-xs font-semibold ml-2 flex-shrink-0"
                       title="Adjust strategy parameters with instant auto-recalculation"
                     >
-                      <Settings size={13} className="text-emerald-400" />
+                      <Settings size={14} className="text-emerald-400" />
                       <span>Parameters</span>
                       {backtestReport.inputs && backtestReport.inputs.length > 0 && (
-                        <span className="px-1 py-0.2 rounded bg-emerald-950 text-emerald-400 text-[10px] font-mono font-bold">
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-400 text-xs font-mono font-bold">
                           {backtestReport.inputs.length}
                         </span>
                       )}
@@ -563,7 +570,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                     {onToggleShowTrades && (
                       <button
                         onClick={onToggleShowTrades}
-                        className={`flex items-center space-x-1.5 px-2.5 py-1 rounded border transition-all text-xs font-semibold ml-2 flex-shrink-0 ${
+                        className={`flex items-center space-x-2 px-3 py-1.5 rounded-md border transition-all text-xs font-semibold ml-2 flex-shrink-0 ${
                           showTradesOnChart
                             ? 'bg-blue-600/20 text-blue-300 border-blue-500/50 hover:bg-blue-600/30'
                             : 'bg-[#1b202c] text-gray-400 border-[#2b3345] hover:text-white'
@@ -571,7 +578,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                         title="Toggle trade arrows and execution paths on candlestick chart"
                       >
                         <span>{showTradesOnChart ? '👁️ Chart Trades' : '👁️‍🗨️ Trades Hidden'}</span>
-                        <span className="px-1 py-0.2 rounded bg-blue-950 text-blue-400 text-[10px] font-mono font-bold">
+                        <span className="px-1.5 py-0.5 rounded bg-blue-950 text-blue-400 text-xs font-mono font-bold">
                           {backtestReport.trades.length}
                         </span>
                       </button>
@@ -596,9 +603,14 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                           (() => {
                             const pts = backtestReport.equityCurve;
                             const initCap = backtestReport.initialCapital;
-                            const allValues = pts.map((p) => p.equity);
-                            const minEqRaw = Math.min(initCap, ...allValues);
-                            const maxEqRaw = Math.max(initCap, ...allValues);
+                            
+                            let minEqRaw = initCap;
+                            let maxEqRaw = initCap;
+                            for (let i = 0; i < pts.length; i++) {
+                              const eq = pts[i].equity;
+                              if (eq < minEqRaw) minEqRaw = eq;
+                              if (eq > maxEqRaw) maxEqRaw = eq;
+                            }
                             
                             const diff = maxEqRaw - minEqRaw || 1000;
                             // 12% padding so line and extreme points never clip
@@ -617,16 +629,27 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                             const bottomY = topMargin + plotH;
 
                             const getY = (val: number) => topMargin + plotH * (1 - (val - yMin) / yRange);
-                            const getX = (idx: number) => leftMargin + (idx / (pts.length - 1)) * plotW;
+
+                            // Safe downsampling for SVG (max ~1000 points so WebGL/DOM never lags)
+                            const step = Math.max(1, Math.floor(pts.length / 1000));
+                            const drawPts: typeof pts = [];
+                            for (let i = 0; i < pts.length; i += step) {
+                              drawPts.push(pts[i]);
+                            }
+                            if (drawPts[drawPts.length - 1] !== pts[pts.length - 1]) {
+                              drawPts.push(pts[pts.length - 1]);
+                            }
+
+                            const getX = (idx: number) => leftMargin + (idx / Math.max(1, drawPts.length - 1)) * plotW;
 
                             const baselineY = getY(initCap);
                             const isProfitable = backtestReport.netProfit >= 0;
 
-                            const polylinePoints = pts.map((p, idx) => `${getX(idx).toFixed(1)},${getY(p.equity).toFixed(1)}`).join(' ');
+                            const polylinePoints = drawPts.map((p, idx) => `${getX(idx).toFixed(1)},${getY(p.equity).toFixed(1)}`).join(' ');
                             
-                            const areaPath = `M ${getX(0).toFixed(1)},${getY(pts[0].equity).toFixed(1)} ` +
-                              pts.map((p, idx) => `L ${getX(idx).toFixed(1)},${getY(p.equity).toFixed(1)}`).join(' ') +
-                              ` L ${getX(pts.length - 1).toFixed(1)},${bottomY.toFixed(1)} L ${getX(0).toFixed(1)},${bottomY.toFixed(1)} Z`;
+                            const areaPath = `M ${getX(0).toFixed(1)},${getY(drawPts[0].equity).toFixed(1)} ` +
+                              drawPts.map((p, idx) => `L ${getX(idx).toFixed(1)},${getY(p.equity).toFixed(1)}`).join(' ') +
+                              ` L ${getX(drawPts.length - 1).toFixed(1)},${bottomY.toFixed(1)} L ${getX(0).toFixed(1)},${bottomY.toFixed(1)} Z`;
 
                             // Percentage positions for HTML badges (100% immune to SVG matrix squashing!)
                             const maxPct = Math.max(5, Math.min(78, (getY(maxEqRaw) / 1000) * 100));
@@ -667,8 +690,8 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                                   />
 
                                   {/* Start & End Points */}
-                                  <circle cx={getX(0)} cy={getY(pts[0].equity)} r="4" fill="#2962ff" />
-                                  <circle cx={getX(pts.length - 1)} cy={getY(pts[pts.length - 1].equity)} r="5" fill={isProfitable ? '#089981' : '#f23645'} stroke="#ffffff" strokeWidth="1.5" />
+                                  <circle cx={getX(0)} cy={getY(drawPts[0].equity)} r="4" fill="#2962ff" />
+                                  <circle cx={getX(drawPts.length - 1)} cy={getY(drawPts[drawPts.length - 1].equity)} r="5" fill={isProfitable ? '#089981' : '#f23645'} stroke="#ffffff" strokeWidth="1.5" />
                                 </svg>
 
                                 {/* Y-Axis Right Labels: Crisp HTML text (Never squashed, 100% legible!) */}
@@ -1342,282 +1365,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
         </div>
       )}
 
-      {/* MODAL 3: Strategy Settings (Inputs) Modal */}
-      {isSettingsModalOpen && (
-        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#1e222d] border border-[#2a2e39] rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden text-xs text-gray-300 animate-in fade-in zoom-in-95 duration-150">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#2a2e39] bg-[#181c26] flex-shrink-0">
-              <div className="flex items-center space-x-2.5">
-                <div className="p-1.5 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/30">
-                  <Settings size={16} />
-                </div>
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-white font-bold text-sm">
-                      {backtestReport?.strategyName || 'Strategy Settings'}
-                    </span>
-                    {backtestReport?.strategyType && (
-                      <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800/40">
-                        {backtestReport.strategyType}
-                      </span>
-                    )}
-                  </div>
-                  <span className="text-[11px] text-gray-400">
-                    Live Pine Script v6 Parameter Adjustments & Instant Recalculation
-                  </span>
-                </div>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                {onResetStrategyParams && (
-                  <button
-                    type="button"
-                    onClick={onResetStrategyParams}
-                    className="flex items-center space-x-1 px-2.5 py-1 rounded bg-[#202533] hover:bg-[#2a3042] text-gray-300 hover:text-white border border-[#2e3446] transition-colors text-xs"
-                    title="Reset all inputs to script default values"
-                  >
-                    <RotateCcw size={12} />
-                    <span>Reset Defaults</span>
-                  </button>
-                )}
-                <button
-                  onClick={() => setIsSettingsModalOpen(false)}
-                  className="p-1 rounded text-gray-400 hover:text-white hover:bg-[#2a2e39] transition-colors"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* Live Recalculation Notification Bar */}
-            <div className="px-5 py-2 bg-[#141824] border-b border-[#262c3d] flex items-center justify-between text-[11px] flex-shrink-0">
-              <div className="flex items-center space-x-2 text-emerald-400 font-medium">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                <span>Instant Auto-Recalculate Active (Changes apply immediately)</span>
-              </div>
-              <div className="text-gray-400 font-mono">
-                {backtestReport?.inputs ? backtestReport.inputs.length : 0} parameter
-                {backtestReport?.inputs && backtestReport.inputs.length !== 1 ? 's' : ''} detected
-              </div>
-            </div>
-
-            {/* Modal Body: Scrollable list of grouped parameters */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-4 min-h-0">
-              {!backtestReport?.inputs || backtestReport.inputs.length === 0 ? (
-                <div className="text-center py-10 text-gray-500">
-                  <Sliders size={32} className="mx-auto mb-2 opacity-40 text-gray-400" />
-                  <p className="font-semibold text-gray-400">No input() parameters found</p>
-                  <p className="text-[11px] text-gray-500 mt-1">
-                    Declare parameters using <code>input.float()</code>, <code>input.int()</code>,{' '}
-                    <code>input.bool()</code> or <code>input.string()</code> in your Pine Script code.
-                  </p>
-                </div>
-              ) : (
-                (() => {
-                  const grouped: Record<string, PineInputParam[]> = {};
-                  for (const inp of backtestReport.inputs) {
-                    const g = inp.group || 'General Settings';
-                    if (!grouped[g]) grouped[g] = [];
-                    grouped[g].push(inp);
-                  }
-
-                  return Object.entries(grouped).map(([groupName, groupParams]) => (
-                    <div
-                      key={groupName}
-                      className="bg-[#151923] rounded-lg border border-[#262c3d] p-3.5 space-y-3"
-                    >
-                      <div className="text-xs font-bold text-gray-200 border-b border-[#252b3d] pb-2 flex items-center justify-between">
-                        <span className="text-blue-400 font-medium">📁 {groupName}</span>
-                        <span className="text-[10px] text-gray-500 font-mono">
-                          ({groupParams.length})
-                        </span>
-                      </div>
-
-                      <div className="space-y-3 pt-1">
-                        {groupParams.map((param) => {
-                          const currentVal =
-                            strategyInputs[param.id] !== undefined
-                              ? strategyInputs[param.id]
-                              : param.value !== undefined
-                              ? param.value
-                              : param.defval;
-
-                          return (
-                            <div
-                              key={param.id}
-                              className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2 rounded hover:bg-[#1a1f2c] transition-colors"
-                            >
-                              <div className="flex-1 min-w-0 pr-2">
-                                <div className="flex items-center space-x-1.5">
-                                  <span className="font-semibold text-gray-200 text-xs truncate">
-                                    {param.title}
-                                  </span>
-                                  {param.tooltip && (
-                                    <span
-                                      title={param.tooltip}
-                                      className="cursor-help text-gray-400 hover:text-blue-400"
-                                    >
-                                      <HelpCircle size={12} />
-                                    </span>
-                                  )}
-                                </div>
-                                {param.title !== param.varName && (
-                                  <span className="text-[10px] text-gray-500 font-mono block truncate">
-                                    {param.varName}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex-shrink-0">
-                                {/* BOOL PARAMETER */}
-                                {param.type === 'bool' && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      onUpdateStrategyParam?.(param.id, !currentVal)
-                                    }
-                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none ${
-                                      currentVal ? 'bg-emerald-600' : 'bg-gray-700'
-                                    }`}
-                                  >
-                                    <span
-                                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
-                                        currentVal ? 'translate-x-4' : 'translate-x-1'
-                                      }`}
-                                    />
-                                  </button>
-                                )}
-
-                                {/* STRING PARAMETER WITH OPTIONS */}
-                                {param.options && param.options.length > 0 && (
-                                  <select
-                                    value={String(currentVal)}
-                                    onChange={(e) => {
-                                      const raw = e.target.value;
-                                      const parsed =
-                                        !isNaN(Number(raw)) && param.type !== 'string'
-                                          ? Number(raw)
-                                          : raw;
-                                      onUpdateStrategyParam?.(param.id, parsed);
-                                    }}
-                                    className="bg-[#10131b] border border-[#2a2e39] rounded px-2.5 py-1 text-white text-xs outline-none focus:border-blue-500 max-w-[240px] truncate font-sans"
-                                  >
-                                    {param.options.map((opt) => (
-                                      <option key={String(opt)} value={String(opt)}>
-                                        {String(opt)}
-                                      </option>
-                                    ))}
-                                  </select>
-                                )}
-
-                                {/* INT / FLOAT NUMERIC PARAMETER */}
-                                {(!param.options || param.options.length === 0) &&
-                                  (param.type === 'int' || param.type === 'float') && (
-                                    <div className="flex items-center space-x-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const stepVal =
-                                            param.step || (param.type === 'int' ? 1 : 0.5);
-                                          const nextVal = Number(
-                                            (Number(currentVal) - stepVal).toFixed(4)
-                                          );
-                                          if (
-                                            param.minval !== undefined &&
-                                            nextVal < param.minval
-                                          )
-                                            return;
-                                          onUpdateStrategyParam?.(param.id, nextVal);
-                                        }}
-                                        className="w-6 h-6 rounded bg-[#202533] hover:bg-[#2c3345] text-gray-300 flex items-center justify-center font-bold text-xs border border-[#2d3448]"
-                                      >
-                                        -
-                                      </button>
-                                      <input
-                                        type="number"
-                                        value={currentVal !== undefined ? currentVal : ''}
-                                        step={param.step || (param.type === 'int' ? 1 : 0.1)}
-                                        min={param.minval}
-                                        max={param.maxval}
-                                        onChange={(e) => {
-                                          const num = parseFloat(e.target.value);
-                                          onUpdateStrategyParam?.(
-                                            param.id,
-                                            isNaN(num)
-                                              ? 0
-                                              : param.type === 'int'
-                                              ? Math.round(num)
-                                              : num
-                                          );
-                                        }}
-                                        className="w-20 bg-[#10131b] border border-[#2a2e39] rounded px-2 py-1 text-center text-white font-mono text-xs outline-none focus:border-blue-500"
-                                      />
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          const stepVal =
-                                            param.step || (param.type === 'int' ? 1 : 0.5);
-                                          const nextVal = Number(
-                                            (Number(currentVal) + stepVal).toFixed(4)
-                                          );
-                                          if (
-                                            param.maxval !== undefined &&
-                                            nextVal > param.maxval
-                                          )
-                                            return;
-                                          onUpdateStrategyParam?.(param.id, nextVal);
-                                        }}
-                                        className="w-6 h-6 rounded bg-[#202533] hover:bg-[#2c3345] text-gray-300 flex items-center justify-center font-bold text-xs border border-[#2d3448]"
-                                      >
-                                        +
-                                      </button>
-                                    </div>
-                                  )}
-
-                                {/* SESSION / STRING WITHOUT OPTIONS */}
-                                {(!param.options || param.options.length === 0) &&
-                                  (param.type === 'string' || param.type === 'session') && (
-                                    <input
-                                      type="text"
-                                      value={String(currentVal || '')}
-                                      placeholder={
-                                        param.type === 'session' ? 'e.g. 0200-0230' : ''
-                                      }
-                                      onChange={(e) =>
-                                        onUpdateStrategyParam?.(param.id, e.target.value)
-                                      }
-                                      className="w-32 sm:w-44 bg-[#10131b] border border-[#2a2e39] rounded px-2.5 py-1 text-white font-mono text-xs outline-none focus:border-blue-500"
-                                    />
-                                  )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ));
-                })()
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="flex items-center justify-between px-5 py-3 border-t border-[#2a2e39] bg-[#181c26] flex-shrink-0">
-              <span className="text-[11px] text-gray-400">
-                All changes immediately update backtest statistics, KPI metrics, and trades.
-              </span>
-              <button
-                type="button"
-                onClick={() => setIsSettingsModalOpen(false)}
-                className="px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors shadow-sm"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Strategy settings modal is handled by top-level StrategySettingsModal */}
     </div>
-
   );
 };

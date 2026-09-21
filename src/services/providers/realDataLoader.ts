@@ -18,6 +18,7 @@ const REAL_DATASETS: Record<string, any[]> = {
   SOLUSDT: sol1m,
   'NQ=F': nq1m,
   NQF: nq1m,
+  NQ: nq1m,
   'ES=F': es1m,
   ESF: es1m,
   SPY: spy1m,

@@ -1,8 +1,24 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import { Vela } from '@luxalgo/vela';
 import { PineWorkerEngine } from '@luxalgo/vela-pinets';
+import { Settings, Eye, EyeOff, Zap } from 'lucide-react';
 import type { Bar, Trade, StrategyLevel } from '../../types';
 import { renderTradesAndLevelsOnChart } from '../../services/chartOverlayBridge';
+
+function getTimeframeMs(tf: string): number {
+  switch (tf) {
+    case '1m': return 60 * 1000;
+    case '3m': return 3 * 60 * 1000;
+    case '5m': return 5 * 60 * 1000;
+    case '15m': return 15 * 60 * 1000;
+    case '30m': return 30 * 60 * 1000;
+    case '1h': return 60 * 60 * 1000;
+    case '4h': return 4 * 60 * 60 * 1000;
+    case '1D': return 24 * 60 * 60 * 1000;
+    case '1W': return 7 * 24 * 60 * 60 * 1000;
+    default: return 60 * 1000;
+  }
+}
 
 interface VelaChartProps {
   symbol: string;
@@ -15,7 +31,11 @@ interface VelaChartProps {
   showLevelsOnChart?: boolean;
   onIndicatorError?: (err: string) => void;
   onIndicatorSuccess?: (name: string) => void;
-  onPrefetchHistory?: (oldestTimestamp: number) => Promise<void>;
+  onPrefetchHistory?: (targetOldestTimestamp: number, minBarsNeeded: number) => Promise<void>;
+  isPrefetchingHistory?: boolean;
+  strategyName?: string;
+  onOpenInputs?: () => void;
+  onToggleTrades?: () => void;
 }
 
 export const VelaChart: React.FC<VelaChartProps> = ({
@@ -30,6 +50,10 @@ export const VelaChart: React.FC<VelaChartProps> = ({
   onIndicatorError,
   onIndicatorSuccess,
   onPrefetchHistory,
+  isPrefetchingHistory = false,
+  strategyName,
+  onOpenInputs,
+  onToggleTrades,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<Vela | null>(null);
@@ -37,7 +61,6 @@ export const VelaChart: React.FC<VelaChartProps> = ({
   const overlayDrawingIdsRef = useRef<string[]>([]);
   const appliedScriptRef = useRef<string>('');
   const isPrefetchingRef = useRef<boolean>(false);
-  const lastPrefetchedTimeRef = useRef<number>(0);
   const debounceTimerRef = useRef<any>(null);
   const isDraggingRef = useRef<boolean>(false);
   const pendingBarsRef = useRef<any[] | null>(null);
@@ -71,7 +94,9 @@ export const VelaChart: React.FC<VelaChartProps> = ({
     }
   }, []);
 
-  // Debounced prefetch check: ONLY checks when user is NOT actively dragging
+  // Viewport-aware continuous prefetch engine:
+  // Detects exactly how much history is visible on the canvas, detects empty space to the left,
+  // and downloads enough bars to completely cover the visible field + extra buffer ("и еще немного для запаса").
   const checkPrefetchNeed = useCallback(() => {
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
@@ -79,50 +104,65 @@ export const VelaChart: React.FC<VelaChartProps> = ({
 
     debounceTimerRef.current = setTimeout(() => {
       const chart = chartInstanceRef.current;
-      if (!chart || !onPrefetchHistoryRef.current || isPrefetchingRef.current || isDraggingRef.current || bars.length < 50) {
+      if (
+        !chart ||
+        !onPrefetchHistoryRef.current ||
+        isPrefetchingRef.current ||
+        isDraggingRef.current ||
+        bars.length < 5
+      ) {
         return;
       }
 
       try {
         const orchestrator = (chart as any).orchestrator;
         const coords = orchestrator?.renderer?.coords;
-        const oldestBarTime = bars[0].time;
-        let shouldPrefetch = false;
-
-        // Check exact coordinate system logical range (includes empty space to the left!)
-        if (coords && typeof coords.visibleLogicalRange === 'function') {
-          const vr = coords.visibleLogicalRange();
-          // vr.from <= 30 means within 30 bars of the oldest loaded bar or empty space on left!
-          if (vr && vr.from <= 30) {
-            shouldPrefetch = true;
-          }
-        } else {
-          const range = chart.getVisibleRange?.();
-          if (range && range.from != null && range.to != null) {
-            const windowWidth = range.to - range.from;
-            if (range.from <= oldestBarTime + windowWidth * 0.25) {
-              shouldPrefetch = true;
-            }
-          }
+        if (!coords || typeof coords.visibleLogicalRange !== 'function') {
+          return;
         }
 
-        if (shouldPrefetch && oldestBarTime !== lastPrefetchedTimeRef.current) {
-          isPrefetchingRef.current = true;
-          lastPrefetchedTimeRef.current = oldestBarTime;
-
-          onPrefetchHistoryRef.current(oldestBarTime)
-            .catch((err) => console.warn('Prefetch notice:', err))
-            .finally(() => {
-              setTimeout(() => {
-                isPrefetchingRef.current = false;
-              }, 300);
-            });
+        const vr = coords.visibleLogicalRange();
+        if (!vr || vr.from == null || vr.to == null) {
+          return;
         }
-      } catch {
-        // ignore
+
+        const fromLogical = vr.from;
+        const toLogical = vr.to;
+        const visibleWidthBars = Math.max(10, Math.ceil(toLogical - fromLogical));
+
+        // Threshold to trigger prefetch:
+        // Either empty space is visible on the left (fromLogical < 0)
+        // OR user is within buffer threshold (0.8 of visible screen width or 100 bars)
+        const triggerThreshold = Math.max(100, Math.ceil(visibleWidthBars * 0.8));
+
+        if (fromLogical <= triggerThreshold) {
+          const emptyBarsOnLeft = fromLogical < 0 ? Math.ceil(-fromLogical) : 0;
+          // Buffer: "и еще немного для запаса" - at least 1.5 visible screens or 600 bars
+          const bufferBars = Math.max(600, Math.ceil(visibleWidthBars * 1.5));
+          const totalBarsToFetch = emptyBarsOnLeft + bufferBars;
+
+          const intervalMs = coords.intervalMs || getTimeframeMs(timeframe);
+          const oldestBarTime = bars[0].time;
+          const targetOldestTime = oldestBarTime - (totalBarsToFetch * intervalMs);
+
+          if (targetOldestTime < oldestBarTime) {
+            isPrefetchingRef.current = true;
+            onPrefetchHistoryRef.current(targetOldestTime, totalBarsToFetch)
+              .catch((err) => console.warn('Prefetch notice:', err))
+              .finally(() => {
+                setTimeout(() => {
+                  isPrefetchingRef.current = false;
+                  // Re-evaluate: if empty space is still exposed, continue prefetching next batch!
+                  checkPrefetchNeed();
+                }, 150);
+              });
+          }
+        }
+      } catch (err) {
+        console.warn('checkPrefetchNeed notice:', err);
       }
-    }, 180);
-  }, [bars]);
+    }, 100);
+  }, [bars, timeframe]);
 
   // Unified Market Lifecycle & Continuous Update Engine
   useEffect(() => {
@@ -159,6 +199,7 @@ export const VelaChart: React.FC<VelaChartProps> = ({
         try {
           orchestrator.setBarSeries(ohlcvBars, { preserveView: true });
           orchestrator.notifySessionsBars?.('backfill');
+          setTimeout(checkPrefetchNeed, 60);
         } catch (err) {
           console.warn('orchestrator.setBarSeries notice:', err);
         }
@@ -191,12 +232,15 @@ export const VelaChart: React.FC<VelaChartProps> = ({
         } catch {}
 
         try {
-          indicatorHandleRef.current = (chartInstanceRef.current as any).addIndicator?.(pineScript);
+          const isIndicatorOnly = pineScript.includes('indicator(') && !pineScript.includes('strategy(');
+          if (isIndicatorOnly) {
+            indicatorHandleRef.current = (chartInstanceRef.current as any).addIndicator?.(pineScript);
+          }
           appliedScriptRef.current = pineScript;
-          onIndicatorSuccess?.();
-        } catch (e) {
+          onIndicatorSuccess?.('Pine Script');
+        } catch (e: any) {
           appliedScriptRef.current = pineScript;
-          onIndicatorError?.(e);
+          onIndicatorError?.(e instanceof Error ? e.message : String(e));
           console.warn('addIndicator update notice:', e);
         }
       }
@@ -238,6 +282,15 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       activeTfRef.current = timeframe;
 
       try {
+        (chart as any).on?.('viewport:changed', () => {
+          checkPrefetchNeed();
+        });
+      } catch (err) {
+        console.warn('viewport:changed listener notice:', err);
+      }
+      setTimeout(checkPrefetchNeed, 100);
+
+      try {
         (chart as any).drawings?.showToolbar?.(false);
         (chart as any).drawingsControl?.showToolbar?.(false);
       } catch {}
@@ -249,15 +302,21 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       }
 
       if (pineScript && pineScript.trim().length > 0) {
-        try {
-          const handle = chart.addIndicator(pineScript);
-          indicatorHandleRef.current = handle;
+        const isIndicatorOnly = pineScript.includes('indicator(') && !pineScript.includes('strategy(');
+        if (isIndicatorOnly) {
+          try {
+            const handle = chart.addIndicator(pineScript);
+            indicatorHandleRef.current = handle;
+            appliedScriptRef.current = pineScript;
+            onIndicatorSuccess?.('Pine Script');
+          } catch (err: any) {
+            appliedScriptRef.current = pineScript;
+            onIndicatorError?.(err);
+            console.warn('Pine Script notice:', err);
+          }
+        } else {
           appliedScriptRef.current = pineScript;
-          onIndicatorSuccess?.();
-        } catch (err: any) {
-          appliedScriptRef.current = pineScript;
-          onIndicatorError?.(err);
-          console.warn('Pine Script notice:', err);
+          onIndicatorSuccess?.('Pine Script');
         }
       }
     } catch (err) {
@@ -382,12 +441,49 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       {/* Chart Canvas Host */}
       <div ref={containerRef} className="w-full h-full" />
 
+      {/* Strategy Overlay Badge on Chart (TradingView Legend Style) */}
+      {strategyName && (
+        <div className="absolute top-12 left-4 z-20 flex items-center space-x-2.5 bg-[#1b202e]/90 backdrop-blur-sm border border-[#2f374a] rounded-lg px-3 py-1.5 text-sm shadow-xl">
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+          <Zap size={15} className="text-amber-400 flex-shrink-0" />
+          <span className="font-bold text-sm text-white max-w-[320px] truncate" title={strategyName}>
+            {strategyName}
+          </span>
+          {onOpenInputs && (
+            <button
+              onClick={onOpenInputs}
+              className="p-1 rounded hover:bg-[#283247] text-gray-300 hover:text-blue-400 transition-colors"
+              title="Настройки параметров стратегии"
+            >
+              <Settings size={15} />
+            </button>
+          )}
+          {onToggleTrades && (
+            <button
+              onClick={onToggleTrades}
+              className="p-1 rounded hover:bg-[#283247] text-gray-300 hover:text-white transition-colors"
+              title={showTradesOnChart ? 'Скрыть сделки на графике' : 'Показать сделки на графике'}
+            >
+              {showTradesOnChart ? <Eye size={15} /> : <EyeOff size={15} className="text-gray-500" />}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Symbol Watermark (Positioned at bottom-left so it NEVER collides with Vela's top-left legend!) */}
-      <div className="absolute bottom-8 left-8 pointer-events-none z-10 flex flex-col opacity-20 select-none">
-        <span className="text-5xl font-black tracking-widest text-white">{symbol}</span>
-        <span className="text-xs font-semibold tracking-wider text-slate-300">
-          {timeframe} • Real Quotes ({bars.length.toLocaleString()} bars loaded)
-        </span>
+      <div className="absolute bottom-8 left-8 pointer-events-none z-10 flex flex-col select-none">
+        <span className="text-5xl font-black tracking-widest text-white/20">{symbol}</span>
+        <div className="flex items-center space-x-2.5 mt-0.5">
+          <span className="text-xs font-semibold tracking-wider text-slate-400">
+            {timeframe} • Real Quotes ({bars.length.toLocaleString()} bars loaded)
+          </span>
+          {isPrefetchingHistory && (
+            <span className="flex items-center space-x-1.5 text-amber-300 animate-pulse bg-amber-950/80 px-2 py-0.5 rounded-md border border-amber-500/50 shadow-lg text-xs font-semibold">
+              <Zap size={12} className="text-amber-400 flex-shrink-0" />
+              <span>Подкачка истории...</span>
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

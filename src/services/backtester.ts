@@ -12,6 +12,8 @@ export interface StrategyConfig {
 export interface Signal {
   index?: number;
   action: 'buy' | 'sell' | 'close' | 'exit';
+  entryPrice?: number;
+  exitPrice?: number;
   limitPrice?: number;
   stopPrice?: number;
   comment?: string;
@@ -64,9 +66,12 @@ export function runBacktest(
   };
 
   let tradeCounter = 1;
+  const sampleInterval = Math.max(1, Math.floor(bars.length / 2000));
 
   for (let i = 0; i < bars.length; i++) {
     const bar = bars[i];
+    const tradesCountBefore = trades.length;
+    const posTypeBefore = position.type;
 
     // 1. If in position, update excursion (run-up / drawdown) & check SL / TP
     if (position.type === 'long') {
@@ -196,7 +201,12 @@ export function runBacktest(
 
     if (signal) {
       if (signal.action === 'close' && position.type !== 'none') {
-        const exitPrice = (position.type === 'long' ? bar.close - slippageValue : bar.close + slippageValue);
+        const exitPrice =
+          signal.exitPrice != null
+            ? signal.exitPrice
+            : position.type === 'long'
+            ? bar.close - slippageValue
+            : bar.close + slippageValue;
         const grossPnl =
           position.type === 'long'
             ? (exitPrice - position.entryPrice) * position.qty
@@ -231,7 +241,7 @@ export function runBacktest(
       } else if (signal.action === 'buy' && position.type !== 'long') {
         // Close short if open
         if (position.type === 'short') {
-          const exitPrice = bar.close + slippageValue;
+          const exitPrice = (signal.entryPrice != null ? signal.entryPrice : bar.close) + slippageValue;
           const grossPnl = (position.entryPrice - exitPrice) * position.qty;
           const comm = (exitPrice + position.entryPrice) * position.qty * commissionRate;
           equity += grossPnl - comm;
@@ -254,7 +264,7 @@ export function runBacktest(
         }
 
         // Open Long
-        const entryPrice = bar.close + slippageValue;
+        const entryPrice = (signal.entryPrice != null ? signal.entryPrice : bar.close) + slippageValue;
         position = {
           type: 'long',
           qty: defaultQty,
@@ -269,7 +279,7 @@ export function runBacktest(
       } else if (signal.action === 'sell' && position.type !== 'short') {
         // Close long if open
         if (position.type === 'long') {
-          const exitPrice = bar.close - slippageValue;
+          const exitPrice = (signal.entryPrice != null ? signal.entryPrice : bar.close) - slippageValue;
           const grossPnl = (exitPrice - position.entryPrice) * position.qty;
           const comm = (exitPrice + position.entryPrice) * position.qty * commissionRate;
           equity += grossPnl - comm;
@@ -292,7 +302,7 @@ export function runBacktest(
         }
 
         // Open Short
-        const entryPrice = bar.close - slippageValue;
+        const entryPrice = (signal.entryPrice != null ? signal.entryPrice : bar.close) - slippageValue;
         position = {
           type: 'short',
           qty: defaultQty,
@@ -329,12 +339,15 @@ export function runBacktest(
       maxDrawdownPercent = currentDrawdownPercent;
     }
 
-    equityCurve.push({
-      time: bar.time,
-      equity: Number(currentTotalEquity.toFixed(2)),
-      drawdown: Number(currentDrawdown.toFixed(2)),
-      drawdownPercent: Number(currentDrawdownPercent.toFixed(2)),
-    });
+    const isTradeEvent = trades.length > tradesCountBefore || position.type !== posTypeBefore;
+    if (i === 0 || i === bars.length - 1 || isTradeEvent || i % sampleInterval === 0) {
+      equityCurve.push({
+        time: bar.time,
+        equity: Number(currentTotalEquity.toFixed(2)),
+        drawdown: Number(currentDrawdown.toFixed(2)),
+        drawdownPercent: Number(currentDrawdownPercent.toFixed(2)),
+      });
+    }
   }
 
   // Calculate Aggregated Metrics

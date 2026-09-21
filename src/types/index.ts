@@ -115,6 +115,7 @@ export interface PineInputParam {
 export interface PineScriptTemplate {
   id: string;
   title: string;
+  name?: string;
   type: 'indicator' | 'strategy';
   description: string;
   code: string;

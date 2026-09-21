@@ -4,6 +4,7 @@ import { TopNav } from './components/Header/TopNav';
 import { Watchlist } from './components/Sidebar/Watchlist';
 import { BottomDock } from './components/Dock/BottomDock';
 import { VelaChart } from './components/Chart/VelaChart';
+import { StrategySettingsModal } from './components/Modal/StrategySettingsModal';
 import { PINE_TEMPLATES } from './services/pineTemplates';
 import {
   fetchPineStrategies,
@@ -134,7 +135,13 @@ export const App: React.FC = () => {
   const [currentTimeframe, setCurrentTimeframe] = useState<Timeframe>('1h');
   const [bars, setBars] = useState<Bar[]>(() => getRealMarketBars('BTCUSDT', '1h'));
   const [activeScript, setActiveScript] = useState<string>(PINE_TEMPLATES[0].code);
-  const [activeStrategyId, setActiveStrategyId] = useState<string>(PINE_TEMPLATES[0].id);
+  const [activeStrategyId, setActiveStrategyId] = useState<string>(() => {
+    try {
+      return localStorage.getItem('nullhyper_active_strategy_id') || 'strategy_nq_2am_breakout_orig';
+    } catch {
+      return 'strategy_nq_2am_breakout_orig';
+    }
+  });
   const [strategyInputs, setStrategyInputs] = useState<Record<string, any>>({});
   const [strategies, setStrategies] = useState<PineScriptTemplate[]>(PINE_TEMPLATES);
   const [activeStrategiesFolder, setActiveStrategiesFolder] = useState<string>('strategies');
@@ -150,15 +157,32 @@ export const App: React.FC = () => {
   });
 
   const [showTradesOnChart, setShowTradesOnChart] = useState<boolean>(true);
-  const [showLevelsOnChart, setShowLevelsOnChart] = useState<boolean>(true);
+  const [showLevelsOnChart] = useState<boolean>(true);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [isPrefetchingHistory, setIsPrefetchingHistory] = useState<boolean>(false);
+  const [isSettingsDocked, setIsSettingsDocked] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('nullhyper_settings_docked');
+      return stored !== null ? stored === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
 
   const isPrefetchingRef = useRef<boolean>(false);
+  const pendingPrefetchTargetRef = useRef<{ targetOldestTimestamp: number; minBarsNeeded: number } | null>(null);
+  const barsRef = useRef<Bar[]>(bars);
+  barsRef.current = bars;
   const currentSymbolRef = useRef<string>('BTCUSDT');
   const currentTimeframeRef = useRef<Timeframe>('1h');
   const activeStrategyIdRef = useRef<string>(PINE_TEMPLATES[0].id);
+  const activeScriptRef = useRef<string>(activeScript);
   const strategyInputsRef = useRef<Record<string, any>>({});
 
+  currentSymbolRef.current = currentSymbol;
+  currentTimeframeRef.current = currentTimeframe;
   activeStrategyIdRef.current = activeStrategyId;
+  activeScriptRef.current = activeScript;
   strategyInputsRef.current = strategyInputs;
 
   const handleFocusTrade = useCallback((trade: any) => {
@@ -180,6 +204,22 @@ export const App: React.FC = () => {
           ...PINE_TEMPLATES.filter((b) => !folderIds.has(b.id)),
         ];
         setStrategies(combined);
+        const currentId = activeStrategyIdRef.current;
+        let matching = combined.find((t) => t.id === currentId || t.filename?.includes(currentId));
+        if (!matching) {
+          matching = combined.find(
+            (t) =>
+              t.filename?.includes('strategy_nq_2am_breakout_orig') ||
+              t.filename?.includes('strategy_nq_2am_breakout') ||
+              t.filename?.includes('nq_2am')
+          );
+        }
+        if (matching) {
+          setActiveStrategyId(matching.id);
+          activeStrategyIdRef.current = matching.id;
+          setActiveScript(matching.code);
+          activeScriptRef.current = matching.code;
+        }
         return combined;
       } else {
         setStrategies(PINE_TEMPLATES);
@@ -241,10 +281,16 @@ export const App: React.FC = () => {
   const handleSelectTemplate = useCallback(
     (templateId: string) => {
       setActiveStrategyId(templateId);
+      activeStrategyIdRef.current = templateId;
+      try {
+        localStorage.setItem('nullhyper_active_strategy_id', templateId);
+      } catch {}
+      strategyInputsRef.current = {};
       setStrategyInputs({});
       const tmpl = strategies.find((t) => t.id === templateId);
       if (tmpl) {
         setActiveScript(tmpl.code);
+        activeScriptRef.current = tmpl.code;
         if (bars.length > 0) {
           try {
             const { report, logs } = executePineBacktest(
@@ -267,39 +313,50 @@ export const App: React.FC = () => {
   );
 
   // Live parameter update handler with instant auto-recalculation
+  // Apply strategy parameters and recalculate strategy upon explicit confirmation ("Готово" / "Применить")
+  const handleApplyStrategyParams = useCallback(
+    (newParams: Record<string, any>) => {
+      strategyInputsRef.current = newParams;
+      setStrategyInputs(newParams);
+
+      if (bars.length > 0) {
+        try {
+          const { report, logs } = executePineBacktest(
+            activeScriptRef.current,
+            currentSymbolRef.current,
+            currentTimeframeRef.current,
+            bars,
+            100000,
+            newParams
+          );
+          setBacktestReport(report);
+          setCompilerLogs(logs);
+        } catch (err: any) {
+          console.warn('[Pine Backtest Error]', err);
+        }
+      }
+    },
+    [bars]
+  );
+
+  // Single parameter update handler without automatic instant recalculation
   const handleUpdateStrategyParam = useCallback(
     (paramId: string, value: any) => {
-      setStrategyInputs((prev) => {
-        const updated = { ...prev, [paramId]: value };
-        if (bars.length > 0) {
-          try {
-            const { report, logs } = executePineBacktest(
-              activeScript,
-              currentSymbolRef.current,
-              currentTimeframeRef.current,
-              bars,
-              100000,
-              updated
-            );
-            setBacktestReport(report);
-            setCompilerLogs(logs);
-          } catch (err: any) {
-            console.warn('[Pine Backtest Error]', err);
-          }
-        }
-        return updated;
-      });
+      const updated = { ...strategyInputsRef.current, [paramId]: value };
+      strategyInputsRef.current = updated;
+      setStrategyInputs(updated);
     },
-    [activeScript, bars]
+    []
   );
 
   // Reset strategy parameters handler
   const handleResetStrategyParams = useCallback(() => {
+    strategyInputsRef.current = {};
     setStrategyInputs({});
     if (bars.length > 0) {
       try {
         const { report, logs } = executePineBacktest(
-          activeScript,
+          activeScriptRef.current,
           currentSymbolRef.current,
           currentTimeframeRef.current,
           bars,
@@ -312,30 +369,30 @@ export const App: React.FC = () => {
         console.warn('[Pine Backtest Error]', err);
       }
     }
-  }, [activeScript, bars]);
+  }, [bars]);
 
-  // Debounced auto-recalculation when activeScript or bars change
+  // Guaranteed reactive auto-recalculation whenever script, bars, symbol, timeframe, or inputs change
   useEffect(() => {
     if (bars.length === 0) return;
     const timer = setTimeout(() => {
       try {
         const { report, logs } = executePineBacktest(
           activeScript,
-          currentSymbolRef.current,
-          currentTimeframeRef.current,
+          currentSymbol,
+          currentTimeframe,
           bars,
           100000,
-          strategyInputsRef.current
+          strategyInputs
         );
         setBacktestReport(report);
         setCompilerLogs(logs);
       } catch (err: any) {
-        console.warn('[Pine Debounce Auto-Recalc Notice]:', err);
+        console.warn('[Pine Auto-Recalc Notice]:', err);
       }
-    }, 350);
+    }, 120);
 
     return () => clearTimeout(timer);
-  }, [activeScript, bars]);
+  }, [activeScript, bars, currentSymbol, currentTimeframe, strategyInputs]);
 
 
   // Keep refs updated
@@ -365,7 +422,43 @@ export const App: React.FC = () => {
   // Load verified authentic market data (from DuckDB, local DB or live exchange feeds)
   const loadMarketData = useCallback(
     async (symbol: string, tf: Timeframe) => {
-      // 1. First check DuckDB WASM in-browser columnar cache
+      // 1. For NQ (NQ=F / NQ / NQF): load the comprehensive continuous dataset (768k+ bars) from W:/algo/GEX
+      const isNQ = symbol.toUpperCase().includes('NQ');
+      if (isNQ) {
+        try {
+          const jsonPath = tf === '1m' ? '/data/nq_1m_compact.json' : `/data/nq_${tf}.json`;
+          const res = await fetch(jsonPath);
+          if (res.ok) {
+            const raw = await res.json();
+            let fullBars: Bar[] = [];
+            if (tf === '1m' && Array.isArray(raw) && Array.isArray(raw[0])) {
+              fullBars = raw.map((r: any[]) => ({
+                time: r[0],
+                open: r[1],
+                high: r[2],
+                low: r[3],
+                close: r[4],
+                volume: r[5] || 0,
+              }));
+            } else if (Array.isArray(raw)) {
+              fullBars = raw;
+            }
+
+            if (fullBars.length > 0) {
+              if (symbol === currentSymbolRef.current && tf === currentTimeframeRef.current) {
+                setBars(fullBars);
+              }
+              insertBarsToDuckDB(symbol, tf, fullBars).then(refreshDuckDBStats).catch(() => {});
+              saveBarsToDB(symbol, tf, fullBars).then(refreshStats).catch(() => {});
+              return fullBars;
+            }
+          }
+        } catch (err) {
+          console.warn('[NQ GEX Dataset Loader Notice]:', err);
+        }
+      }
+
+      // 2. Check DuckDB WASM in-browser columnar cache
       const duckBars = await queryBarsFromDuckDB(symbol, tf);
       if (duckBars && duckBars.length >= 200) {
         if (symbol === currentSymbolRef.current && tf === currentTimeframeRef.current) {
@@ -374,7 +467,7 @@ export const App: React.FC = () => {
         return duckBars;
       }
 
-      // 2. Try local IndexedDB cache
+      // 3. Try local IndexedDB cache
       const cached = await loadBarsFromDB(symbol, tf);
       if (cached && cached.length >= 200) {
         if (symbol === currentSymbolRef.current && tf === currentTimeframeRef.current) {
@@ -499,52 +592,132 @@ export const App: React.FC = () => {
 
   // Proactive background prefetching when panning/zooming backwards
   const handlePrefetchHistory = useCallback(
-    async (oldestTimestamp: number) => {
-      if (isPrefetchingRef.current || bars.length === 0) return;
+    async (targetOldestTimestamp: number, minBarsNeeded: number = 1000) => {
+      const currentBars = barsRef.current;
+      if (currentBars.length === 0) return;
+
+      const currentOldestTime = currentBars[0].time;
+      if (currentOldestTime <= targetOldestTimestamp) {
+        return;
+      }
+
+      if (isPrefetchingRef.current) {
+        if (
+          !pendingPrefetchTargetRef.current ||
+          targetOldestTimestamp < pendingPrefetchTargetRef.current.targetOldestTimestamp
+        ) {
+          pendingPrefetchTargetRef.current = { targetOldestTimestamp, minBarsNeeded };
+        }
+        return;
+      }
+
       isPrefetchingRef.current = true;
+      setIsPrefetchingHistory(true);
 
       try {
-        let olderBars: Bar[] = [];
-        const meta = INITIAL_SYMBOLS.find((s) => s.symbol === currentSymbol);
+        let currentOldest = currentBars[0].time;
+        const accumulatedBars: Bar[] = [];
+        const sym = currentSymbolRef.current;
+        const tf = currentTimeframeRef.current;
+        const meta = INITIAL_SYMBOLS.find((s) => s.symbol === sym);
+        const source = meta?.source || 'binance';
+        let batchCount = 0;
+        const MAX_BATCHES = 12; // Fetch up to 12,000 bars in a single continuous wave
 
-        if (meta?.source === 'binance') {
-          // Fetch previous 1,000 bars from Binance
-          olderBars = await fetchBinanceKlines(currentSymbol, currentTimeframe, 1000, oldestTimestamp - 1);
-        } else if (meta?.source === 'yahoo') {
-          const windowMs = 30 * 86400 * 1000;
-          olderBars = await fetchYahooQuotes(
-            currentSymbol,
-            currentTimeframe,
-            oldestTimestamp - windowMs,
-            oldestTimestamp - 1000
-          );
+        while (
+          currentOldest > targetOldestTimestamp &&
+          accumulatedBars.length < minBarsNeeded &&
+          batchCount < MAX_BATCHES
+        ) {
+          let batch: Bar[] = [];
+          if (source === 'binance') {
+            batch = await fetchBinanceKlines(sym, tf, 1000, currentOldest - 1);
+            if (!batch || batch.length === 0) {
+              break;
+            }
+            for (const b of batch) accumulatedBars.push(b);
+            let batchMinTime = batch[0].time;
+            for (let i = 1; i < batch.length; i++) {
+              if (batch[i].time < batchMinTime) batchMinTime = batch[i].time;
+            }
+            if (batchMinTime >= currentOldest) {
+              break;
+            }
+            currentOldest = batchMinTime;
+            batchCount++;
+            if (batch.length < 1000) {
+              break;
+            }
+          } else if (source === 'yahoo') {
+            const fromMs = targetOldestTimestamp;
+            const toMs = currentOldest - 1000;
+            batch = await fetchYahooQuotes(sym, tf, fromMs, toMs);
+            if (batch && batch.length > 0) {
+              for (const b of batch) accumulatedBars.push(b);
+              let minT = batch[0].time;
+              for (let i = 1; i < batch.length; i++) {
+                if (batch[i].time < minT) minT = batch[i].time;
+              }
+              currentOldest = minT;
+            }
+            break;
+          } else {
+            break;
+          }
         }
 
-        if (olderBars && olderBars.length > 0) {
-          // Merge and deduplicate
+        if (accumulatedBars.length > 0) {
           const byTime = new Map<number, Bar>();
-          for (const b of olderBars) byTime.set(b.time, b);
-          for (const b of bars) byTime.set(b.time, b);
+          for (const b of accumulatedBars) byTime.set(b.time, b);
+          for (const b of barsRef.current) byTime.set(b.time, b);
 
           const merged = Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+          barsRef.current = merged;
 
-          await insertBarsToDuckDB(currentSymbol, currentTimeframe, merged);
-          await saveBarsToDB(currentSymbol, currentTimeframe, merged);
+          await insertBarsToDuckDB(sym, tf, merged);
+          await saveBarsToDB(sym, tf, merged);
           await Promise.all([refreshStats(), refreshDuckDBStats()]);
 
           setBars(merged);
           setCompilerLogs((prev) => [
             ...prev.slice(-40),
-            `[Continuous Data Engine] DuckDB ingested ${olderBars.length} real bars. Total continuous depth: ${merged.length.toLocaleString()} bars.`,
+            `[Continuous Data Engine] DuckDB ingested ${accumulatedBars.length} real bars. Total continuous depth: ${merged.length.toLocaleString()} bars.`,
           ]);
+
+          // Re-calculate Pine Script strategy over extended history
+          if (activeScriptRef.current && merged.length > 0) {
+            try {
+              const { report } = executePineBacktest(
+                activeScriptRef.current,
+                sym,
+                tf,
+                merged,
+                100000,
+                strategyInputsRef.current
+              );
+              setBacktestReport(report);
+            } catch (err: any) {
+              console.warn('Prefetch backtest error:', err);
+            }
+          }
         }
       } catch (err: any) {
         console.warn('Continuous history prefetch notice:', err);
       } finally {
         isPrefetchingRef.current = false;
+        setIsPrefetchingHistory(false);
+
+        // Process queued prefetch if user panned further while downloading
+        if (pendingPrefetchTargetRef.current) {
+          const next = pendingPrefetchTargetRef.current;
+          pendingPrefetchTargetRef.current = null;
+          if (barsRef.current.length > 0 && barsRef.current[0].time > next.targetOldestTimestamp) {
+            handlePrefetchHistory(next.targetOldestTimestamp, next.minBarsNeeded);
+          }
+        }
       }
     },
-    [bars, currentSymbol, currentTimeframe, refreshStats, refreshDuckDBStats]
+    [refreshStats, refreshDuckDBStats]
   );
 
   const handleIndicatorError = useCallback((err: string) => {
@@ -710,9 +883,20 @@ export const App: React.FC = () => {
         onRunBacktest={handleRunBacktest}
         availableSymbols={INITIAL_SYMBOLS}
         isBacktesting={isBacktesting}
+        onOpenInputs={() => setIsSettingsModalOpen(true)}
+        inputsCount={backtestReport?.inputs?.length}
+        activeStrategyName={
+          backtestReport?.strategyName ||
+          strategies.find((s) => s.id === activeStrategyId)?.title ||
+          strategies.find((s) => s.id === activeStrategyId)?.name
+        }
+        activeStrategyType={backtestReport?.strategyType}
+        strategies={strategies}
+        selectedTemplateId={activeStrategyId}
+        onSelectTemplate={handleSelectTemplate}
       />
 
-      {/* 2. Middle Main Workspace (Vela Chart + Watchlist) */}
+      {/* 2. Middle Main Workspace (Vela Chart + Strategy Settings Panel + Watchlist) */}
       <div className="flex-1 flex overflow-hidden relative">
         {/* Center: LuxAlgo Vela WebGL2 Chart Canvas */}
         <main className="flex-1 h-full relative overflow-hidden bg-[#131722]">
@@ -728,8 +912,41 @@ export const App: React.FC = () => {
             onIndicatorError={handleIndicatorError}
             onIndicatorSuccess={handleIndicatorSuccess}
             onPrefetchHistory={handlePrefetchHistory}
+            isPrefetchingHistory={isPrefetchingHistory}
+            strategyName={
+              backtestReport?.strategyName ||
+              strategies.find((s) => s.id === activeStrategyId)?.title ||
+              strategies.find((s) => s.id === activeStrategyId)?.name
+            }
+            onOpenInputs={() => setIsSettingsModalOpen(true)}
+            onToggleTrades={() => setShowTradesOnChart((p) => !p)}
           />
         </main>
+
+        {/* Strategy Settings Docked Side Panel (100% visible chart, zero overlap) */}
+        {isSettingsModalOpen && isSettingsDocked && (
+          <StrategySettingsModal
+            isOpen={isSettingsModalOpen}
+            onClose={() => setIsSettingsModalOpen(false)}
+            strategyName={
+              backtestReport?.strategyName ||
+              strategies.find((s) => s.id === activeStrategyId)?.title ||
+              strategies.find((s) => s.id === activeStrategyId)?.name
+            }
+            strategyType={backtestReport?.strategyType}
+            inputs={backtestReport?.inputs}
+            strategyInputs={strategyInputs}
+            onApplyStrategyParams={handleApplyStrategyParams}
+            onUpdateStrategyParam={handleUpdateStrategyParam}
+            onResetStrategyParams={handleResetStrategyParams}
+            backtestReport={backtestReport}
+            isDocked={true}
+            onToggleDock={() => {
+              setIsSettingsDocked(false);
+              try { localStorage.setItem('nullhyper_settings_docked', 'false'); } catch {}
+            }}
+          />
+        )}
 
         {/* Right Watchlist & Inspector */}
         <Watchlist
@@ -768,7 +985,34 @@ export const App: React.FC = () => {
         showTradesOnChart={showTradesOnChart}
         onToggleShowTrades={() => setShowTradesOnChart((p) => !p)}
         onFocusTrade={handleFocusTrade}
+        isSettingsOpen={isSettingsModalOpen}
+        onToggleSettings={setIsSettingsModalOpen}
       />
+
+      {/* 4. Strategy Settings Floating Window (NO dark backdrop, draggable anywhere, 100% visible chart) */}
+      {isSettingsModalOpen && !isSettingsDocked && (
+        <StrategySettingsModal
+          isOpen={isSettingsModalOpen}
+          onClose={() => setIsSettingsModalOpen(false)}
+          strategyName={
+            backtestReport?.strategyName ||
+            strategies.find((s) => s.id === activeStrategyId)?.title ||
+            strategies.find((s) => s.id === activeStrategyId)?.name
+          }
+          strategyType={backtestReport?.strategyType}
+          inputs={backtestReport?.inputs}
+          strategyInputs={strategyInputs}
+          onApplyStrategyParams={handleApplyStrategyParams}
+          onUpdateStrategyParam={handleUpdateStrategyParam}
+          onResetStrategyParams={handleResetStrategyParams}
+          backtestReport={backtestReport}
+          isDocked={false}
+          onToggleDock={() => {
+            setIsSettingsDocked(true);
+            try { localStorage.setItem('nullhyper_settings_docked', 'true'); } catch {}
+          }}
+        />
+      )}
     </div>
   );
 };

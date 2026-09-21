@@ -137,27 +137,50 @@ export function calculateVWAP(bars: Bar[]): number[] {
   return result;
 }
 
+const nyDtf = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/New_York',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+});
+
 /**
- * Convert timestamp to NY local time components (America/New_York)
+ * Convert timestamp to exact NY local time components (America/New_York)
+ * using true IANA timezone definition with exact Daylight Saving Time boundaries.
  */
 export function getBarNYTime(timestamp: number): {
   hour: number;
   minute: number;
+  second: number;
   day: number;
+  month: number;
+  year: number;
   dateStr: string;
 } {
-  const d = new Date(timestamp);
-  const month = d.getUTCMonth(); // 0-11
-  // Daylight Saving Time for US Eastern: 2nd Sunday in March to 1st Sunday in Nov
-  const isEDT = month >= 2 && month <= 10;
-  const offsetHours = isEDT ? -4 : -5;
-  const nyTime = new Date(timestamp + offsetHours * 3600 * 1000);
-
+  const parts = nyDtf.formatToParts(new Date(timestamp));
+  let year = '', month = '', day = '', hour = '', minute = '', second = '';
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.type === 'year') year = p.value;
+    else if (p.type === 'month') month = p.value;
+    else if (p.type === 'day') day = p.value;
+    else if (p.type === 'hour') hour = p.value;
+    else if (p.type === 'minute') minute = p.value;
+    else if (p.type === 'second') second = p.value;
+  }
+  const h = parseInt(hour, 10) % 24;
   return {
-    hour: nyTime.getUTCHours(),
-    minute: nyTime.getUTCMinutes(),
-    day: nyTime.getUTCDate(),
-    dateStr: nyTime.toISOString().slice(0, 10),
+    hour: h,
+    minute: parseInt(minute, 10) || 0,
+    second: parseInt(second, 10) || 0,
+    day: parseInt(day, 10) || 1,
+    month: parseInt(month, 10) || 1,
+    year: parseInt(year, 10) || 2026,
+    dateStr: `${year}-${month}-${day}`,
   };
 }
 
@@ -495,24 +518,29 @@ export function executePineBacktest(
     );
 
     const refMode = paramMap.ref_mode || '1-Hour Range (02:00 - 03:00 NY)';
-    const useAtrRange = paramMap.use_atr_range === true;
+    const useAtrRange = paramMap.use_atr_range === true || paramMap.use_atr_range === 'true';
     const atrLen = Number(paramMap.atr_len) || 14;
-    const atrPct = Number(paramMap.atr_pct) || 100.0;
+    const atrPct = paramMap.atr_pct !== undefined ? Number(paramMap.atr_pct) : 100.0;
     const centerMode = paramMap.center_mode || 'High / Low (Классический)';
-    const rangeMult = Number(paramMap.range_mult) !== undefined ? Number(paramMap.range_mult) : 1.0;
-    const breakoutMargin =
-      Number(paramMap.breakoutMargin) !== undefined
-        ? Number(paramMap.breakoutMargin)
-        : 2.0 * rangeMult;
+    const rangeMult =
+      paramMap.range_mult !== undefined
+        ? Number(paramMap.range_mult)
+        : paramMap.breakoutMargin !== undefined
+        ? Number(paramMap.breakoutMargin) / 2
+        : 1.0;
 
     const slMode = paramMap.sl_mode || '2x Candle Range (от входа)';
-    const slMultiplier = Number(paramMap.sl_multiplier) || 2.0;
-    const slBufferPct = Number(paramMap.sl_buffer_pct) || 0.1;
-    const slPoints = Number(paramMap.slPoints) || 15.0;
-    const tpPoints = Number(paramMap.tpPoints) || 30.0;
-    const maxOneTrade = paramMap.max_one_trade !== false;
-    const useTp = paramMap.use_tp === true;
-    const tpRr = Number(paramMap.tp_rr) || 2.0;
+    const slMultiplier =
+      paramMap.sl_multiplier !== undefined ? Number(paramMap.sl_multiplier) : 2.0;
+    const slBufferPct =
+      paramMap.sl_buffer_pct !== undefined ? Number(paramMap.sl_buffer_pct) : 0.1;
+    const entryType = paramMap.entry_type || 'Stop Order (мгновенный пробой)';
+    const maxOneTrade =
+      paramMap.max_one_trade !== undefined
+        ? paramMap.max_one_trade === true || paramMap.max_one_trade === 'true'
+        : true;
+    const useTp = paramMap.use_tp === true || paramMap.use_tp === 'true';
+    const tpRr = paramMap.tp_rr !== undefined ? Number(paramMap.tp_rr) : 2.0;
 
     const formationSession = parseSessionRange(paramMap.sessionTime || '0200-0230');
     const tradingSession = parseSessionRange(paramMap.tradeSession || '0230-0800');
@@ -521,7 +549,7 @@ export function executePineBacktest(
     const vwapSeries = calculateVWAP(bars);
 
     logs.push(
-      `[NQ Breakout Parameters] ref_mode="${refMode}", buffer=${breakoutMargin}pts, slPoints=${slPoints}pts, tpPoints=${tpPoints}pts, range_mult=${rangeMult}`
+      `[NQ Breakout Parameters] ref_mode="${refMode}", range_mult=${rangeMult}, sl_mode="${slMode}", entry_type="${entryType}", max_one_trade=${maxOneTrade}, use_tp=${useTp} (tp_rr=${tpRr})`
     );
 
     // Track historical bar execution state
@@ -530,13 +558,154 @@ export function executePineBacktest(
     let sessionOpen: number | null = null;
     let sessionClose: number | null = null;
     let sessionVwap: number | null = null;
-    let inFormation = false;
-    let tradedToday = false;
+    let refReady = false;
+    let tradeCountToday = 0;
     let currentDayStr = '';
     const strategyLevels: StrategyLevel[] = [];
     let formationStartTime: number | null = null;
     let formationEndTime: number | null = null;
-    let recordedLevelsForDay = '';
+    let upperTrigger: number | null = null;
+    let lowerTrigger: number | null = null;
+    let longSlPrice: number | null = null;
+    let shortSlPrice: number | null = null;
+    let longTpPrice: number | undefined;
+    let shortTpPrice: number | undefined;
+    let refCenter: number | null = null;
+
+    const lockLevels = (barIdx: number) => {
+      const rawRange = Math.max(0.25, (sessionHigh ?? bars[barIdx].high) - (sessionLow ?? bars[barIdx].low));
+      const curAtr = atrSeries[barIdx] || rawRange;
+      const refRange = useAtrRange ? curAtr * (atrPct / 100.0) : rawRange;
+
+      let center = ((sessionHigh ?? bars[barIdx].high) + (sessionLow ?? bars[barIdx].low)) / 2.0;
+      let calcHigh = sessionHigh ?? bars[barIdx].high;
+      let calcLow = sessionLow ?? bars[barIdx].low;
+
+      if (centerMode === 'Середина тела свечи (Body Midpoint)') {
+        center =
+          ((sessionOpen ?? bars[barIdx].open) + (sessionClose ?? bars[barIdx].close)) / 2.0;
+        calcHigh = center + refRange / 2.0;
+        calcLow = center - refRange / 2.0;
+      } else if (centerMode === 'Уровень VWAP') {
+        center = sessionVwap ?? center;
+        calcHigh = center + refRange / 2.0;
+        calcLow = center - refRange / 2.0;
+      } else if (centerMode === 'Середина свечи (High + Low) / 2') {
+        center = ((sessionHigh ?? bars[barIdx].high) + (sessionLow ?? bars[barIdx].low)) / 2.0;
+        calcHigh = center + refRange / 2.0;
+        calcLow = center - refRange / 2.0;
+      } else {
+        // High / Low (Классический)
+        if (useAtrRange) {
+          calcHigh = center + refRange / 2.0;
+          calcLow = center - refRange / 2.0;
+        } else {
+          calcHigh = sessionHigh ?? bars[barIdx].high;
+          calcLow = sessionLow ?? bars[barIdx].low;
+        }
+      }
+
+      refCenter = center;
+      const offset =
+        paramMap.breakoutMargin !== undefined && paramMap.range_mult === undefined
+          ? Number(paramMap.breakoutMargin)
+          : refRange * rangeMult;
+
+      upperTrigger = calcHigh + offset;
+      lowerTrigger = calcLow - offset;
+
+      const buffer = refRange * slBufferPct;
+      if (paramMap.slPoints !== undefined && paramMap.sl_mode === undefined) {
+        longSlPrice = upperTrigger - Number(paramMap.slPoints);
+        shortSlPrice = lowerTrigger + Number(paramMap.slPoints);
+      } else if (slMode === 'За противоположную линию канала') {
+        longSlPrice = lowerTrigger - buffer;
+        shortSlPrice = upperTrigger + buffer;
+      } else if (slMode === 'Диапазон канала (Channel Span)') {
+        const channelSpan = upperTrigger - lowerTrigger + buffer;
+        longSlPrice = upperTrigger - channelSpan;
+        shortSlPrice = lowerTrigger + channelSpan;
+      } else {
+        // 2x Candle Range (от входа)
+        const slDist = refRange * slMultiplier + buffer;
+        longSlPrice = upperTrigger - slDist;
+        shortSlPrice = lowerTrigger + slDist;
+      }
+
+      if (paramMap.tpPoints !== undefined && !useTp) {
+        longTpPrice = upperTrigger + Number(paramMap.tpPoints);
+        shortTpPrice = lowerTrigger - Number(paramMap.tpPoints);
+      } else if (useTp) {
+        const longRisk = Math.max(1, upperTrigger - longSlPrice);
+        const shortRisk = Math.max(1, shortSlPrice - lowerTrigger);
+        longTpPrice = upperTrigger + longRisk * tpRr;
+        shortTpPrice = lowerTrigger - shortRisk * tpRr;
+      } else {
+        longTpPrice = undefined;
+        shortTpPrice = undefined;
+      }
+
+      refReady = true;
+
+      // Record visual levels for chart overlay
+      if (formationStartTime && upperTrigger !== null && lowerTrigger !== null) {
+        const approxTradeEnd = (formationEndTime || bars[barIdx].time) + 6 * 3600000;
+
+        if (paramMap.show_session !== false) {
+          strategyLevels.push({
+            id: `formation_box_${currentDayStr}`,
+            name: '02:00 NY Range Box',
+            type: 'box',
+            startTime: formationStartTime,
+            endTime: formationEndTime || bars[barIdx].time,
+            highPrice: sessionHigh!,
+            lowPrice: sessionLow!,
+            color: '#3b82f6',
+          });
+        }
+
+        if (paramMap.show_lines !== false) {
+          strategyLevels.push({
+            id: `upper_trigger_${currentDayStr}`,
+            name: 'Upper Trigger',
+            type: 'line',
+            startTime: formationEndTime || bars[barIdx].time,
+            endTime: approxTradeEnd,
+            price: upperTrigger,
+            color: '#089981',
+            lineStyle: 'solid',
+          });
+
+          strategyLevels.push({
+            id: `lower_trigger_${currentDayStr}`,
+            name: 'Lower Trigger',
+            type: 'line',
+            startTime: formationEndTime || bars[barIdx].time,
+            endTime: approxTradeEnd,
+            price: lowerTrigger,
+            color: '#f23645',
+            lineStyle: 'solid',
+          });
+        }
+
+        if (
+          paramMap.show_center !== false &&
+          refCenter !== null &&
+          centerMode !== 'High / Low (Классический)'
+        ) {
+          strategyLevels.push({
+            id: `center_line_${currentDayStr}`,
+            name: 'Range Center',
+            type: 'line',
+            startTime: formationEndTime || bars[barIdx].time,
+            endTime: approxTradeEnd,
+            price: refCenter,
+            color: '#ffeb3b',
+            lineStyle: 'dashed',
+          });
+        }
+      }
+    };
 
     report = runBacktest(
       strategyName,
@@ -547,7 +716,7 @@ export function executePineBacktest(
         const bar = b[i];
         const ny = getBarNYTime(bar.time);
 
-        // Daily state reset
+        // Daily state reset at New York midnight
         if (ny.dateStr !== currentDayStr) {
           currentDayStr = ny.dateStr;
           sessionHigh = null;
@@ -555,40 +724,46 @@ export function executePineBacktest(
           sessionOpen = null;
           sessionClose = null;
           sessionVwap = null;
-          inFormation = false;
-          tradedToday = false;
+          refReady = false;
+          tradeCountToday = 0;
           formationStartTime = null;
           formationEndTime = null;
+          upperTrigger = null;
+          lowerTrigger = null;
+          longSlPrice = null;
+          shortSlPrice = null;
+          longTpPrice = undefined;
+          shortTpPrice = undefined;
         }
 
-        // Determine if in Formation Window or Trading Window
+        // Determine session windows in New York time
         let isFormationBar = false;
         let isTradeBar = false;
-        let isAtOrAfterClose = false;
+        const isAtOrAfterClose = ny.hour >= 9;
 
         if (refMode === 'Single Bar at 02:00 NY') {
-          isFormationBar = ny.hour === 2 && ny.minute === 0;
-          isTradeBar = (ny.hour === 2 && ny.minute > 0) || (ny.hour >= 3 && ny.hour < 9);
-          isAtOrAfterClose = ny.hour >= 9;
+          // If timeframe is 1h, hour 2 is the bar. If < 1h, exact 02:00 bar.
+          isFormationBar =
+            ny.hour === 2 && (timeframe.includes('h') || timeframe.includes('d') || ny.minute === 0);
+          isTradeBar =
+            refReady &&
+            ((ny.hour === 2 && ny.minute > 0) || (ny.hour >= 3 && ny.hour < 9));
         } else if (paramMap.sessionTime || paramMap.tradeSession) {
           isFormationBar = isWithinSession(ny.hour, ny.minute, formationSession);
           isTradeBar = isWithinSession(ny.hour, ny.minute, tradingSession);
-          isAtOrAfterClose = !isFormationBar && !isTradeBar && ny.hour >= 8;
         } else {
           // Standard 1-Hour 02:00-03:00 NY range
           isFormationBar = ny.hour === 2;
-          isTradeBar = ny.hour >= 3 && ny.hour < 9;
-          isAtOrAfterClose = ny.hour >= 9;
+          isTradeBar = refReady && ny.hour >= 3 && ny.hour < 9;
         }
 
         // 1. Formation Session: Accumulate High, Low, Open, Close
         if (isFormationBar) {
-          if (!inFormation || sessionHigh === null || sessionLow === null) {
+          if (sessionHigh === null || sessionLow === null) {
             sessionHigh = bar.high;
             sessionLow = bar.low;
             sessionOpen = bar.open;
             formationStartTime = bar.time;
-            inFormation = true;
           } else {
             sessionHigh = Math.max(sessionHigh, bar.high);
             sessionLow = Math.min(sessionLow, bar.low);
@@ -596,145 +771,86 @@ export function executePineBacktest(
           formationEndTime = bar.time;
           sessionClose = bar.close;
           sessionVwap = vwapSeries[i] || bar.close;
+
+          if (refMode === 'Single Bar at 02:00 NY') {
+            lockLevels(i);
+          }
           return null;
-        } else {
-          inFormation = false;
         }
 
-        // Force session close at 09:00 NY
+        // Lock 1-Hour range when trading window begins
+        if (!refReady && sessionHigh !== null && (ny.hour >= 3 && ny.hour < 9)) {
+          lockLevels(i);
+          isTradeBar = true;
+        }
+
+        // Force session exit at 09:00 NY
         if (isAtOrAfterClose && pos.type !== 'none') {
           return {
             index: i,
             action: 'close',
+            exitPrice: bar.open,
             comment: 'Session End (09:00 NY Exit)',
           };
         }
 
         // 2. Trading Session Breakout Check
-        if (isTradeBar && sessionHigh !== null && sessionLow !== null) {
-          let rawRange = sessionHigh - sessionLow;
-          if (useAtrRange && atrSeries[i] && !isNaN(atrSeries[i])) {
-            rawRange = atrSeries[i] * (atrPct / 100.0);
-          }
+        if (isTradeBar && refReady && upperTrigger !== null && lowerTrigger !== null) {
+          const canEnter =
+            (maxOneTrade ? tradeCountToday === 0 : true) && pos.type === 'none';
 
-          let effectiveHigh = sessionHigh;
-          let effectiveLow = sessionLow;
+          if (canEnter) {
+            if (entryType === 'Stop Order (мгновенный пробой)') {
+              const hitLong = bar.high >= upperTrigger;
+              const hitShort = bar.low <= lowerTrigger;
 
-          if (centerMode === 'Середина тела свечи (Body Midpoint)' && sessionOpen !== null && sessionClose !== null) {
-            const center = (sessionOpen + sessionClose) / 2;
-            effectiveHigh = center + rawRange / 2;
-            effectiveLow = center - rawRange / 2;
-          } else if (centerMode === 'Уровень VWAP' && sessionVwap !== null) {
-            effectiveHigh = sessionVwap + rawRange / 2;
-            effectiveLow = sessionVwap - rawRange / 2;
-          } else if (centerMode === 'Середина свечи (High + Low) / 2') {
-            const center = (sessionHigh + sessionLow) / 2;
-            effectiveHigh = center + rawRange / 2;
-            effectiveLow = center - rawRange / 2;
-          }
-
-          const upperTrigger = effectiveHigh + (paramMap.range_mult ? rawRange * rangeMult : breakoutMargin);
-          const lowerTrigger = effectiveLow - (paramMap.range_mult ? rawRange * rangeMult : breakoutMargin);
-
-          // Record visual levels once per day
-          if (recordedLevelsForDay !== currentDayStr && formationEndTime) {
-            recordedLevelsForDay = currentDayStr;
-            const approxTradeWindowEnd = formationEndTime + 6 * 3600000;
-
-            if (formationStartTime) {
-              strategyLevels.push({
-                id: `formation_box_${currentDayStr}`,
-                name: '02:00 NY Range Box',
-                type: 'box',
-                startTime: formationStartTime,
-                endTime: formationEndTime,
-                highPrice: sessionHigh,
-                lowPrice: sessionLow,
-                color: '#3b82f6',
-              });
+              if (hitLong && (!hitShort || bar.open <= upperTrigger)) {
+                tradeCountToday++;
+                const fillPrice = Math.max(bar.open, upperTrigger);
+                return {
+                  index: i,
+                  action: 'buy',
+                  entryPrice: fillPrice,
+                  stopPrice: longSlPrice || undefined,
+                  limitPrice: longTpPrice,
+                  comment: `2AM Long Breakout (Trigger: ${upperTrigger.toFixed(1)})`,
+                };
+              } else if (hitShort) {
+                tradeCountToday++;
+                const fillPrice = Math.min(bar.open, lowerTrigger);
+                return {
+                  index: i,
+                  action: 'sell',
+                  entryPrice: fillPrice,
+                  stopPrice: shortSlPrice || undefined,
+                  limitPrice: shortTpPrice,
+                  comment: `2AM Short Breakout (Trigger: ${lowerTrigger.toFixed(1)})`,
+                };
+              }
+            } else {
+              // Bar Close
+              if (bar.close > upperTrigger) {
+                tradeCountToday++;
+                return {
+                  index: i,
+                  action: 'buy',
+                  entryPrice: bar.close,
+                  stopPrice: longSlPrice || undefined,
+                  limitPrice: longTpPrice,
+                  comment: `2AM Long Close Breakout (${bar.close.toFixed(1)} > ${upperTrigger.toFixed(1)})`,
+                };
+              } else if (bar.close < lowerTrigger) {
+                tradeCountToday++;
+                return {
+                  index: i,
+                  action: 'sell',
+                  entryPrice: bar.close,
+                  stopPrice: shortSlPrice || undefined,
+                  limitPrice: shortTpPrice,
+                  comment: `2AM Short Close Breakout (${bar.close.toFixed(1)} < ${lowerTrigger.toFixed(1)})`,
+                };
+              }
             }
-
-            strategyLevels.push({
-              id: `upper_trigger_${currentDayStr}`,
-              name: 'Upper Trigger',
-              type: 'line',
-              startTime: formationEndTime,
-              endTime: approxTradeWindowEnd,
-              price: upperTrigger,
-              color: '#089981',
-              lineStyle: 'solid',
-            });
-
-            strategyLevels.push({
-              id: `lower_trigger_${currentDayStr}`,
-              name: 'Lower Trigger',
-              type: 'line',
-              startTime: formationEndTime,
-              endTime: approxTradeWindowEnd,
-              price: lowerTrigger,
-              color: '#f23645',
-              lineStyle: 'solid',
-            });
-          }
-
-          if (maxOneTrade && tradedToday) {
-            return null;
-          }
-
-          // Calculate SL distances
-          let longSlPrice: number;
-          let shortSlPrice: number;
-
-          if (paramMap.slPoints) {
-            longSlPrice = bar.close - slPoints;
-            shortSlPrice = bar.close + slPoints;
-          } else if (slMode === 'За противоположную линию канала') {
-            const buffer = rawRange * slBufferPct;
-            longSlPrice = lowerTrigger - buffer;
-            shortSlPrice = upperTrigger + buffer;
-          } else {
-            // 2x Candle Range
-            const slDistance = rawRange * slMultiplier + rawRange * slBufferPct;
-            longSlPrice = bar.close - slDistance;
-            shortSlPrice = bar.close + slDistance;
-          }
-
-          // Calculate TP distances
-          let longTpPrice: number | undefined;
-          let shortTpPrice: number | undefined;
-
-          if (paramMap.tpPoints) {
-            longTpPrice = bar.close + tpPoints;
-            shortTpPrice = bar.close - tpPoints;
-          } else if (useTp) {
-            const longRisk = Math.max(1, bar.close - longSlPrice);
-            const shortRisk = Math.max(1, shortSlPrice - bar.close);
-            longTpPrice = bar.close + longRisk * tpRr;
-            shortTpPrice = bar.close - shortRisk * tpRr;
-          }
-
-          // Bullish Breakout
-          if (bar.close > upperTrigger && pos.type !== 'long') {
-            tradedToday = true;
-            return {
-              index: i,
-              action: 'buy',
-              stopPrice: longSlPrice,
-              limitPrice: longTpPrice,
-              comment: `2AM Long Breakout (Trigger: ${upperTrigger.toFixed(1)})`,
-            };
-          }
-
-          // Bearish Breakout
-          if (bar.close < lowerTrigger && pos.type !== 'short') {
-            tradedToday = true;
-            return {
-              index: i,
-              action: 'sell',
-              stopPrice: shortSlPrice,
-              limitPrice: shortTpPrice,
-              comment: `2AM Short Breakout (Trigger: ${lowerTrigger.toFixed(1)})`,
-            };
           }
         }
 
