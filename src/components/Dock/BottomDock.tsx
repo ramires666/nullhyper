@@ -56,6 +56,7 @@ interface BottomDockProps {
   onFocusTrade?: (trade: any) => void;
   isSettingsOpen?: boolean;
   onToggleSettings?: (open: boolean) => void;
+  chartTimezone?: string;
 }
 
 
@@ -91,6 +92,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onFocusTrade,
   isSettingsOpen,
   onToggleSettings,
+  chartTimezone = 'America/New_York',
 }) => {
   const [activeTab, setActiveTab] = useState<DockTab>('tester');
   const [testerSubTab, setTesterSubTab] = useState<TesterSubTab>('overview');
@@ -128,43 +130,89 @@ export const BottomDock: React.FC<BottomDockProps> = ({
     drawdownPct: number;
     xPct: number;
     yPct: number;
+    relXPct: number;
     nearestTrade?: Trade;
   } | null>(null);
   const [equityChartMode, setEquityChartMode] = useState<'equity' | 'drawdown'>('equity');
   const equityContainerRef = useRef<HTMLDivElement>(null);
 
-  const formatEquityDate = (timestamp: number, totalSpanMs: number): string => {
+  const formatEquityDate = (
+    timestamp: number,
+    tz: string = chartTimezone || 'America/New_York'
+  ): { date: string; time: string; full: string } => {
+    const normTz =
+      tz === 'local'
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : tz || 'America/New_York';
     const d = new Date(timestamp);
-    const oneYear = 365 * 24 * 3600 * 1000;
-    const oneMonth = 30 * 24 * 3600 * 1000;
-    const oneDay = 24 * 3600 * 1000;
-
-    if (totalSpanMs > oneYear * 1.5) {
-      return d.toLocaleDateString('ru-RU', { month: 'short', year: 'numeric' }).replace(' г.', '');
-    } else if (totalSpanMs > oneMonth * 2) {
-      return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: '2-digit' }).replace(' г.', '');
-    } else if (totalSpanMs > oneDay * 2) {
-      return (
-        d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) +
-        ' ' +
-        d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-      );
-    } else {
-      return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    try {
+      const dtf = new Intl.DateTimeFormat('ru-RU', {
+        timeZone: normTz,
+        day: '2-digit',
+        month: '2-digit',
+        year: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+      const parts = dtf.formatToParts(d);
+      let day = '',
+        month = '',
+        year = '',
+        hour = '',
+        minute = '';
+      for (const p of parts) {
+        if (p.type === 'day') day = p.value;
+        else if (p.type === 'month') month = p.value;
+        else if (p.type === 'year') year = p.value;
+        else if (p.type === 'hour') hour = p.value;
+        else if (p.type === 'minute') minute = p.value;
+      }
+      const dateStr = `${day}.${month}.${year}`;
+      const timeStr = `${hour}:${minute}`;
+      return {
+        date: dateStr,
+        time: timeStr,
+        full: `${dateStr} ${timeStr}`,
+      };
+    } catch {
+      return {
+        date: d.toISOString().slice(5, 10),
+        time: d.toISOString().slice(11, 16),
+        full: d.toISOString().slice(0, 16).replace('T', ' '),
+      };
     }
   };
 
-  const formatEquityFullDate = (timestamp: number): string => {
+  const formatEquityFullDate = (
+    timestamp: number,
+    tz: string = chartTimezone || 'America/New_York'
+  ): string => {
+    const normTz =
+      tz === 'local'
+        ? Intl.DateTimeFormat().resolvedOptions().timeZone
+        : tz || 'America/New_York';
     const d = new Date(timestamp);
-    return (
-      d.toLocaleDateString('ru-RU', {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      }) +
-      ', ' +
-      d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-    );
+    try {
+      return (
+        d.toLocaleDateString('ru-RU', {
+          timeZone: normTz,
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+        }) +
+        ' ' +
+        d.toLocaleTimeString('ru-RU', {
+          timeZone: normTz,
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false,
+        })
+      );
+    } catch {
+      return d.toISOString().replace('T', ' ').slice(0, 19);
+    }
   };
 
 
@@ -647,9 +695,6 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                         }
 
                         const initCap = backtestReport.initialCapital;
-                        const startTime = pts[0].time;
-                        const endTime = pts[pts.length - 1].time;
-                        const totalSpanMs = Math.max(1000, endTime - startTime);
 
                         // Safe downsampling for SVG rendering (max ~1000 points so WebGL & DOM remain at 60 FPS)
                         const step = Math.max(1, Math.floor(pts.length / 1000));
@@ -674,10 +719,10 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                         const maxDdPct = Math.max(1, backtestReport.maxDrawdownPercent * 1.12);
 
                         // Normalized SVG coordinates (0 to 1000)
-                        const leftMargin = 16;
-                        const rightMargin = 120; // room for HTML price badges
-                        const topMargin = 28;
-                        const botMargin = 52; // room for calendar dates on X-axis
+                        const leftMargin = 40;
+                        const rightMargin = 100; // room for HTML price badges and timezone badge
+                        const topMargin = 20;
+                        const botMargin = 20; // dedicated bottom bar handles X-axis labels
                         const plotW = 1000 - leftMargin - rightMargin;
                         const plotH = 1000 - topMargin - botMargin;
                         const bottomY = topMargin + plotH;
@@ -702,25 +747,34 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                         const baselineY = equityChartMode === 'equity' ? getEquityY(initCap) : getDrawdownY(0);
                         const isProfitable = backtestReport.netProfit >= 0;
 
-                        // Calculate Real Calendar Date Ticks for X-Axis
+                        // Calculate Real Calendar Date & Time Ticks for X-Axis (evenly spaced across chart width)
                         const numTicks = 6;
-                        const dateTicks: { idx: number; time: number; label: string; x: number }[] = [];
+                        const dateTicks: {
+                          idx: number;
+                          time: number;
+                          date: string;
+                          timeStr: string;
+                          full: string;
+                          x: number;
+                          relPct: number;
+                        }[] = [];
                         for (let k = 0; k < numTicks; k++) {
                           const frac = k / (numTicks - 1);
-                          const targetTime = startTime + frac * totalSpanMs;
-                          let closestIdx = 0;
-                          let minDiff = Infinity;
-                          for (let i = 0; i < drawPts.length; i++) {
-                            const d = Math.abs(drawPts[i].time - targetTime);
-                            if (d < minDiff) {
-                              minDiff = d;
-                              closestIdx = i;
-                            }
-                          }
-                          const tickTime = drawPts[closestIdx].time;
-                          const x = getX(closestIdx);
-                          const label = formatEquityDate(tickTime, totalSpanMs);
-                          dateTicks.push({ idx: closestIdx, time: tickTime, label, x });
+                          const targetIdx = Math.min(drawPts.length - 1, Math.round(frac * (drawPts.length - 1)));
+                          const pt = drawPts[targetIdx];
+                          const tickTime = pt.time;
+                          const x = getX(targetIdx);
+                          const relPct = ((x - leftMargin) / plotW) * 100;
+                          const formatted = formatEquityDate(tickTime, chartTimezone);
+                          dateTicks.push({
+                            idx: targetIdx,
+                            time: tickTime,
+                            date: formatted.date,
+                            timeStr: formatted.time,
+                            full: formatted.full,
+                            x,
+                            relPct,
+                          });
                         }
 
                         // Calculate Running Peak Equity Curve (All-Time High line)
@@ -794,6 +848,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                           const yPos = getY(p);
                           const xPct = (xPos / 1000) * 100;
                           const yPct = (yPos / 1000) * 100;
+                          const relXPct = Math.max(0, Math.min(100, ((xPos - leftMargin) / plotW) * 100));
 
                           // Find nearest trade within temporal proximity
                           const nearestTrade = backtestReport.trades.find(
@@ -807,12 +862,13 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                             drawdownPct: p.drawdownPercent,
                             xPct,
                             yPct,
+                            relXPct,
                             nearestTrade,
                           });
                         };
 
                         return (
-                          <div className="h-full flex flex-col min-h-0">
+                          <div className="flex-1 flex flex-col min-h-0">
                             {/* 1. Header Toolbar with Mode Switcher, Milestones and Legend */}
                             <div className="flex-shrink-0 flex flex-wrap justify-between items-center mb-1.5 px-1 text-xs gap-2">
                               <div className="flex items-center space-x-2">
@@ -847,7 +903,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                                   <div className="flex items-center space-x-2 text-[11px] font-mono bg-[#162032] border border-blue-500/50 px-3 py-0.5 rounded text-blue-300 shadow-sm animate-fade-in">
                                     <span className="text-gray-400">Точка:</span>
                                     <span className="text-white font-bold">
-                                      {formatEquityDate(equityHover.time, totalSpanMs)}
+                                      {formatEquityDate(equityHover.time, chartTimezone).full}
                                     </span>
                                     <span>|</span>
                                     <span className="text-gray-400">Баланс:</span>
@@ -936,13 +992,14 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                               </div>
                             </div>
 
-                            {/* 2. Interactive SVG Canvas */}
-                            <div
-                              ref={equityContainerRef}
-                              onPointerMove={handleEquityPointerMove}
-                              onPointerLeave={() => setEquityHover(null)}
-                              className="flex-1 w-full bg-[#141722] rounded border border-[#2a2e39] relative min-h-0 overflow-hidden cursor-crosshair select-none"
-                            >
+                            {/* 2. Interactive SVG Canvas & Dedicated Time Scale */}
+                            <div className="flex-1 w-full bg-[#141722] rounded border border-[#2a2e39] flex flex-col min-h-0 overflow-hidden select-none">
+                              <div
+                                ref={equityContainerRef}
+                                onPointerMove={handleEquityPointerMove}
+                                onPointerLeave={() => setEquityHover(null)}
+                                className="flex-1 w-full relative min-h-0 overflow-hidden cursor-crosshair"
+                              >
                               <svg className="w-full h-full block" viewBox="0 0 1000 1000" preserveAspectRatio="none">
                                 <defs>
                                   {/* Equity Gradient */}
@@ -1214,36 +1271,6 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                                 </>
                               )}
 
-                              {/* 4. Bottom X-Axis Real Calendar Dates (Strictly aligned with vertical grid lines) */}
-                              <div
-                                className="absolute bottom-1.5 text-[11px] font-mono select-none pointer-events-none"
-                                style={{
-                                  left: `${(leftMargin / 1000) * 100}%`,
-                                  right: `${(rightMargin / 1000) * 100}%`,
-                                }}
-                              >
-                                {dateTicks.map((tick, i) => {
-                                  const relPct = ((tick.x - leftMargin) / plotW) * 100;
-                                  return (
-                                    <div
-                                      key={`dtick-${i}`}
-                                      className="absolute whitespace-nowrap text-gray-300 font-semibold text-[10px] tracking-wide"
-                                      style={{
-                                        left: `${relPct.toFixed(2)}%`,
-                                        transform:
-                                          i === 0
-                                            ? 'translateX(0%)'
-                                            : i === dateTicks.length - 1
-                                            ? 'translateX(-100%)'
-                                            : 'translateX(-50%)',
-                                      }}
-                                    >
-                                      <span>{tick.label}</span>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-
                               {/* 5. Floating Interactive Tooltip Card */}
                               {equityHover && (
                                 <div
@@ -1255,7 +1282,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                                   }}
                                 >
                                   <div className="text-[11px] text-gray-200 font-bold border-b border-[#252c3e] pb-1 mb-1.5 flex items-center justify-between">
-                                    <span>📅 {formatEquityFullDate(equityHover.time)}</span>
+                                    <span>📅 {formatEquityFullDate(equityHover.time, chartTimezone)}</span>
                                     {equityHover.equity >= initCap ? (
                                       <span className="text-emerald-400 text-[10px] font-bold px-1 rounded bg-emerald-950/60 border border-emerald-500/40">
                                         В ПРИБЫЛИ
@@ -1320,6 +1347,68 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                                 </div>
                               )}
                             </div>
+
+                            {/* 4. Dedicated Bottom X-Axis Time & Date Scale (Always visible, perfectly aligned) */}
+                            <div
+                              className="h-9 flex-shrink-0 bg-[#0d1017] border-t border-[#222736] relative select-none flex items-center"
+                              style={{
+                                paddingLeft: `${(leftMargin / 1000) * 100}%`,
+                                paddingRight: `${(rightMargin / 1000) * 100}%`,
+                              }}
+                            >
+                              <div className="w-full h-full relative">
+                                {dateTicks.map((tick, i) => {
+                                  return (
+                                    <div
+                                      key={`dtick-${i}`}
+                                      className="absolute top-0 bottom-0 flex flex-col justify-center items-center pointer-events-none whitespace-nowrap leading-none"
+                                      style={{
+                                        left: `${tick.relPct.toFixed(2)}%`,
+                                        transform:
+                                          i === 0
+                                            ? 'translateX(0%)'
+                                            : i === dateTicks.length - 1
+                                            ? 'translateX(-100%)'
+                                            : 'translateX(-50%)',
+                                      }}
+                                    >
+                                      <div className="w-px h-1.5 bg-[#475569] mb-1" />
+                                      <div className="flex items-center space-x-1.5 font-mono">
+                                        <span className="text-gray-400 text-[11px] font-medium">{tick.date}</span>
+                                        <span className="text-amber-300 font-bold text-[11px] bg-[#1a2130] px-1.5 py-0.5 rounded border border-amber-500/30 shadow-sm">
+                                          {tick.timeStr}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+
+                                {/* Dynamic Hover Indicator on X-Axis */}
+                                {equityHover && (
+                                  <div
+                                    className="absolute top-0 bottom-0 flex flex-col justify-center items-center pointer-events-none whitespace-nowrap z-20"
+                                    style={{
+                                      left: `${equityHover.relXPct.toFixed(2)}%`,
+                                      transform: 'translateX(-50%)',
+                                    }}
+                                  >
+                                    <div className="w-px h-2 bg-cyan-400" />
+                                    <div className="bg-cyan-600 text-white font-mono font-bold text-[11px] px-2 py-0.5 rounded shadow-xl border border-cyan-400 flex items-center space-x-1.5">
+                                      <span>{formatEquityDate(equityHover.time, chartTimezone).date}</span>
+                                      <span className="text-amber-200 font-bold">{formatEquityDate(equityHover.time, chartTimezone).time}</span>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Timezone label in right margin */}
+                              <div className="absolute right-2 top-0 bottom-0 flex items-center pointer-events-none">
+                                <span className="text-[10px] font-mono font-semibold text-gray-400 bg-[#161a24] px-2 py-0.5 rounded border border-[#262c3e]">
+                                  🕒 {chartTimezone === 'America/New_York' ? 'NY (EST)' : chartTimezone === 'UTC' ? 'UTC' : chartTimezone}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
                           </div>
                         );
                       })()}

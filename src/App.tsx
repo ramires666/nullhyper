@@ -994,6 +994,7 @@ export const App: React.FC = () => {
         onFocusTrade={handleFocusTrade}
         isSettingsOpen={isSettingsModalOpen}
         onToggleSettings={setIsSettingsModalOpen}
+        chartTimezone={chartTimezone}
       />
 
       {/* 4. Strategy Settings Floating Window (NO dark backdrop, draggable anywhere, 100% visible chart) */}
