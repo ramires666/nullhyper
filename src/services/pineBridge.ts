@@ -704,7 +704,8 @@ export function executePineBacktest(
 
       // Record visual levels for chart overlay
       if (formationStartTime && upperTrigger !== null && lowerTrigger !== null) {
-        const approxTradeEnd = (formationEndTime || bars[barIdx].time) + 6 * 3600000;
+        const sessionTransitionTime = bars[barIdx]?.time || formationEndTime || formationStartTime;
+        const approxTradeEnd = sessionTransitionTime + 6 * 3600000;
 
         if (paramMap.show_session !== false) {
           strategyLevels.push({
@@ -712,7 +713,7 @@ export function executePineBacktest(
             name: '02:00 NY Range Box',
             type: 'box',
             startTime: formationStartTime,
-            endTime: formationEndTime || bars[barIdx].time,
+            endTime: sessionTransitionTime,
             highPrice: sessionHigh!,
             lowPrice: sessionLow!,
             color: '#3b82f6',
@@ -724,7 +725,7 @@ export function executePineBacktest(
             id: `upper_trigger_${currentDayStr}`,
             name: 'Upper Trigger',
             type: 'line',
-            startTime: formationEndTime || bars[barIdx].time,
+            startTime: sessionTransitionTime,
             endTime: approxTradeEnd,
             price: upperTrigger,
             color: '#089981',
@@ -735,7 +736,7 @@ export function executePineBacktest(
             id: `lower_trigger_${currentDayStr}`,
             name: 'Lower Trigger',
             type: 'line',
-            startTime: formationEndTime || bars[barIdx].time,
+            startTime: sessionTransitionTime,
             endTime: approxTradeEnd,
             price: lowerTrigger,
             color: '#f23645',
@@ -834,7 +835,7 @@ export function executePineBacktest(
         }
 
         // Lock 1-Hour range when trading window begins
-        if (!refReady && sessionHigh !== null && (ny.hour >= 3 && ny.hour < 9)) {
+        if (!refReady && sessionHigh !== null && (isTradeBar || (ny.hour >= 3 && ny.hour < 9))) {
           lockLevels(i);
           isTradeBar = true;
         }

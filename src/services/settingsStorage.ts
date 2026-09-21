@@ -115,3 +115,21 @@ export function setStoredActiveStrategyId(id: string): void {
     localStorage.setItem(STRATEGY_ID_KEY, id);
   } catch {}
 }
+
+const TIMEZONE_KEY = 'nullhyper_chart_timezone';
+
+export function getStoredTimezone(defaultTz: string = 'America/New_York'): string {
+  try {
+    if (typeof window === 'undefined') return defaultTz;
+    return localStorage.getItem(TIMEZONE_KEY) || defaultTz;
+  } catch {
+    return defaultTz;
+  }
+}
+
+export function setStoredTimezone(tz: string): void {
+  try {
+    if (typeof window === 'undefined') return;
+    localStorage.setItem(TIMEZONE_KEY, tz);
+  } catch {}
+}

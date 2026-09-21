@@ -40,6 +40,8 @@ import {
   setStoredTimeframe,
   getStoredActiveStrategyId,
   setStoredActiveStrategyId,
+  getStoredTimezone,
+  setStoredTimezone,
 } from './services/settingsStorage';
 
 const INITIAL_SYMBOLS: SymbolMetadata[] = [
@@ -169,6 +171,15 @@ export const App: React.FC = () => {
     symbolsCount: 0,
     details: [],
   });
+
+  const [chartTimezone, setChartTimezone] = useState<string>(() =>
+    getStoredTimezone('America/New_York')
+  );
+
+  const handleSelectTimezone = useCallback((tz: string) => {
+    setChartTimezone(tz);
+    setStoredTimezone(tz);
+  }, []);
 
   const [showTradesOnChart, setShowTradesOnChart] = useState<boolean>(true);
   const [showLevelsOnChart] = useState<boolean>(true);
@@ -887,6 +898,8 @@ export const App: React.FC = () => {
         strategies={strategies}
         selectedTemplateId={activeStrategyId}
         onSelectTemplate={handleSelectTemplate}
+        chartTimezone={chartTimezone}
+        onSelectTimezone={handleSelectTimezone}
       />
 
       {/* 2. Middle Main Workspace (Vela Chart + Strategy Settings Panel + Watchlist) */}
@@ -913,6 +926,7 @@ export const App: React.FC = () => {
             }
             onOpenInputs={() => setIsSettingsModalOpen(true)}
             onToggleTrades={() => setShowTradesOnChart((p) => !p)}
+            timezone={chartTimezone}
           />
         </main>
 

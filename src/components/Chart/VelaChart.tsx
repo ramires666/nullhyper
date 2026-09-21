@@ -36,6 +36,7 @@ interface VelaChartProps {
   strategyName?: string;
   onOpenInputs?: () => void;
   onToggleTrades?: () => void;
+  timezone?: string;
 }
 
 export const VelaChart: React.FC<VelaChartProps> = ({
@@ -54,6 +55,7 @@ export const VelaChart: React.FC<VelaChartProps> = ({
   strategyName,
   onOpenInputs,
   onToggleTrades,
+  timezone = 'America/New_York',
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartInstanceRef = useRef<Vela | null>(null);
@@ -277,6 +279,16 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       activeTfRef.current = timeframe;
 
       try {
+        const normTz =
+          timezone === 'local'
+            ? Intl.DateTimeFormat().resolvedOptions().timeZone
+            : timezone || 'America/New_York';
+        (chart as any).renderer?.set?.('timezone', normTz);
+      } catch (tzErr) {
+        console.warn('Initial chart timezone notice:', tzErr);
+      }
+
+      try {
         (chart as any).on?.('viewport:changed', () => {
           checkPrefetchNeed();
         });
@@ -408,6 +420,20 @@ export const VelaChart: React.FC<VelaChartProps> = ({
       }
     };
   }, [checkPrefetchNeed, applyPendingBars]);
+
+  // Dynamically update display timezone on the chart canvas without destroying chart instance
+  useEffect(() => {
+    if (!chartInstanceRef.current || !timezone) return;
+    try {
+      const normTz =
+        timezone === 'local'
+          ? Intl.DateTimeFormat().resolvedOptions().timeZone
+          : timezone;
+      (chartInstanceRef.current as any).renderer?.set?.('timezone', normTz);
+    } catch (err) {
+      console.warn('Dynamic chart timezone change notice:', err);
+    }
+  }, [timezone]);
 
   // Dynamic Auto-Resize
   useEffect(() => {

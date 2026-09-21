@@ -10,13 +10,14 @@ import {
   Zap,
   Check,
   FileCode2,
+  Clock,
 } from 'lucide-react';
 
 interface TopNavProps {
   currentSymbol: string;
   currentTimeframe: Timeframe;
   onSelectSymbol: (symbol: string) => void;
-  onSelectTimeframe: (tf: Timeframe) => void;
+  onSelectTimeframe: (timeframe: Timeframe) => void;
   onRunBacktest: () => void;
   availableSymbols: SymbolMetadata[];
   isBacktesting?: boolean;
@@ -27,6 +28,8 @@ interface TopNavProps {
   strategies?: PineScriptTemplate[];
   selectedTemplateId?: string;
   onSelectTemplate?: (templateId: string) => void;
+  chartTimezone?: string;
+  onSelectTimezone?: (tz: string) => void;
 }
 
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1D', '1W'];
@@ -46,27 +49,34 @@ export const TopNav: React.FC<TopNavProps> = ({
   strategies = [],
   selectedTemplateId,
   onSelectTemplate,
+  chartTimezone = 'America/New_York',
+  onSelectTimezone,
 }) => {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [isStrategyMenuOpen, setIsStrategyMenuOpen] = useState(false);
+  const [isTzMenuOpen, setIsTzMenuOpen] = useState(false);
 
   const stratMenuRef = useRef<HTMLDivElement>(null);
+  const tzMenuRef = useRef<HTMLDivElement>(null);
 
-  // Close strategy dropdown on outside click
+  // Close dropdowns on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (stratMenuRef.current && !stratMenuRef.current.contains(e.target as Node)) {
         setIsStrategyMenuOpen(false);
       }
+      if (tzMenuRef.current && !tzMenuRef.current.contains(e.target as Node)) {
+        setIsTzMenuOpen(false);
+      }
     };
-    if (isStrategyMenuOpen) {
+    if (isStrategyMenuOpen || isTzMenuOpen) {
       document.addEventListener('mousedown', handleClickOutside);
     }
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isStrategyMenuOpen]);
+  }, [isStrategyMenuOpen, isTzMenuOpen]);
 
   const filteredSymbols = availableSymbols.filter(
     (s) =>
@@ -167,6 +177,83 @@ export const TopNav: React.FC<TopNavProps> = ({
               {tf}
             </button>
           ))}
+        </div>
+
+        {/* Timezone Switcher */}
+        <div className="relative" ref={tzMenuRef}>
+          <button
+            onClick={() => setIsTzMenuOpen(!isTzMenuOpen)}
+            className="flex items-center space-x-1.5 px-2.5 py-1.5 rounded-md bg-[#181d28] hover:bg-[#222938] border border-[#2b3548] text-xs font-semibold text-gray-200 transition-colors shadow-sm"
+            title={`Часовой пояс оси графика: ${chartTimezone}. Кликните для выбора.`}
+          >
+            <Clock size={13} className="text-amber-400" />
+            <span className="font-mono">
+              {chartTimezone === 'America/New_York'
+                ? '🗽 NY (UTC-4)'
+                : chartTimezone === 'local'
+                ? '💻 Local'
+                : '🌐 UTC'}
+            </span>
+            <ChevronDown size={12} className="text-gray-400" />
+          </button>
+
+          {isTzMenuOpen && (
+            <div className="absolute top-10 left-0 w-64 bg-[#1a1e2b] border border-[#353e54] rounded-xl shadow-2xl z-50 overflow-hidden py-1 divide-y divide-[#242a3a]">
+              <div className="px-3 py-1.5 text-[11px] font-bold text-gray-400 uppercase tracking-wider bg-[#131722] flex items-center justify-between">
+                <span>Часовой пояс графика</span>
+                <span className="text-[10px] text-emerald-400 font-mono">Шкала X</span>
+              </div>
+              <div className="p-1 space-y-0.5">
+                {[
+                  {
+                    id: 'America/New_York',
+                    icon: '🗽',
+                    label: 'New York (EDT/EST, UTC-4)',
+                    sub: 'Время американской сессии (NQ, ES, 02:00 NY)',
+                  },
+                  {
+                    id: 'Etc/UTC',
+                    icon: '🌐',
+                    label: 'UTC (00:00)',
+                    sub: 'Всемирное координированное время',
+                  },
+                  {
+                    id: 'local',
+                    icon: '💻',
+                    label: 'Local (Системное время)',
+                    sub: 'Время вашего компьютера',
+                  },
+                ].map((opt) => {
+                  const isSelected = chartTimezone === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        onSelectTimezone?.(opt.id);
+                        setIsTzMenuOpen(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 rounded-lg text-xs flex items-center justify-between transition-colors ${
+                        isSelected
+                          ? 'bg-blue-600/20 text-blue-400 font-bold border border-blue-500/30'
+                          : 'text-gray-300 hover:bg-[#252c3e]'
+                      }`}
+                    >
+                      <div className="flex flex-col pr-2">
+                        <span className="flex items-center space-x-1.5">
+                          <span>{opt.icon}</span>
+                          <span>{opt.label}</span>
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-normal mt-0.5">
+                          {opt.sub}
+                        </span>
+                      </div>
+                      {isSelected && <Check size={14} className="text-blue-400 flex-shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
