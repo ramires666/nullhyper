@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import {
   Code,
@@ -19,7 +19,7 @@ import {
   Save,
   Settings,
 } from 'lucide-react';
-import type { BacktestReport, PineScriptTemplate } from '../../types';
+import type { BacktestReport, PineScriptTemplate, Trade } from '../../types';
 import { PINE_TEMPLATES } from '../../services/pineTemplates';
 import {
   executeDuckDBSQL,
@@ -119,6 +119,53 @@ export const BottomDock: React.FC<BottomDockProps> = ({
       setSelectedTemplate(selectedTemplateId);
     }
   }, [selectedTemplateId]);
+
+  // Equity Chart Interactive State & Mode
+  const [equityHover, setEquityHover] = useState<{
+    time: number;
+    equity: number;
+    drawdown: number;
+    drawdownPct: number;
+    xPct: number;
+    yPct: number;
+    nearestTrade?: Trade;
+  } | null>(null);
+  const [equityChartMode, setEquityChartMode] = useState<'equity' | 'drawdown'>('equity');
+  const equityContainerRef = useRef<HTMLDivElement>(null);
+
+  const formatEquityDate = (timestamp: number, totalSpanMs: number): string => {
+    const d = new Date(timestamp);
+    const oneYear = 365 * 24 * 3600 * 1000;
+    const oneMonth = 30 * 24 * 3600 * 1000;
+    const oneDay = 24 * 3600 * 1000;
+
+    if (totalSpanMs > oneYear * 1.5) {
+      return d.toLocaleDateString('ru-RU', { month: 'short', year: 'numeric' }).replace(' г.', '');
+    } else if (totalSpanMs > oneMonth * 2) {
+      return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: '2-digit' }).replace(' г.', '');
+    } else if (totalSpanMs > oneDay * 2) {
+      return (
+        d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' }) +
+        ' ' +
+        d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+      );
+    } else {
+      return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+  };
+
+  const formatEquityFullDate = (timestamp: number): string => {
+    const d = new Date(timestamp);
+    return (
+      d.toLocaleDateString('ru-RU', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      }) +
+      ', ' +
+      d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    );
+  };
 
 
   // Drag-to-resize dock height handler
@@ -586,154 +633,696 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                   </div>
 
 
-                  {/* Subtab 1: Equity Curve SVG */}
+                  {/* Subtab 1: Equity Curve & Drawdown Chart with Real Calendar Dates & Crosshairs */}
                   {testerSubTab === 'overview' && (
-                    <div className="flex-1 p-2.5 flex flex-col min-h-0 overflow-hidden">
-                      <div className="flex-shrink-0 flex justify-between items-center mb-1 text-[11px] text-gray-400">
-                        <span>Cumulative Equity Growth & Drawdown</span>
-                        <span className="font-mono">
-                          Initial: ${backtestReport.initialCapital.toLocaleString()} → Final: $
-                          {backtestReport.finalCapital.toLocaleString()}
-                        </span>
-                      </div>
+                    <div className="flex-1 p-2 flex flex-col min-h-0 overflow-hidden bg-[#131722]">
+                      {(() => {
+                        const pts = backtestReport.equityCurve;
+                        if (!pts || pts.length < 2) {
+                          return (
+                            <div className="flex-1 flex items-center justify-center text-gray-500 text-xs">
+                              Ожидание расчета баров...
+                            </div>
+                          );
+                        }
 
-                      {/* High-Fidelity Responsive Canvas for Equity Curve */}
-                      <div className="flex-1 w-full bg-[#141722] rounded border border-[#2a2e39] relative min-h-0 overflow-hidden">
-                        {backtestReport.equityCurve.length > 1 ? (
-                          (() => {
-                            const pts = backtestReport.equityCurve;
-                            const initCap = backtestReport.initialCapital;
-                            
-                            let minEqRaw = initCap;
-                            let maxEqRaw = initCap;
-                            for (let i = 0; i < pts.length; i++) {
-                              const eq = pts[i].equity;
-                              if (eq < minEqRaw) minEqRaw = eq;
-                              if (eq > maxEqRaw) maxEqRaw = eq;
+                        const initCap = backtestReport.initialCapital;
+                        const startTime = pts[0].time;
+                        const endTime = pts[pts.length - 1].time;
+                        const totalSpanMs = Math.max(1000, endTime - startTime);
+
+                        // Safe downsampling for SVG rendering (max ~1000 points so WebGL & DOM remain at 60 FPS)
+                        const step = Math.max(1, Math.floor(pts.length / 1000));
+                        const drawPts: typeof pts = [];
+                        for (let i = 0; i < pts.length; i += step) {
+                          drawPts.push(pts[i]);
+                        }
+                        if (drawPts[drawPts.length - 1] !== pts[pts.length - 1]) {
+                          drawPts.push(pts[pts.length - 1]);
+                        }
+
+                        // Equity bounds
+                        let minEqRaw = initCap;
+                        let maxEqRaw = initCap;
+                        for (let i = 0; i < pts.length; i++) {
+                          const eq = pts[i].equity;
+                          if (eq < minEqRaw) minEqRaw = eq;
+                          if (eq > maxEqRaw) maxEqRaw = eq;
+                        }
+
+                        // Drawdown bounds
+                        const maxDdPct = Math.max(1, backtestReport.maxDrawdownPercent * 1.12);
+
+                        // Normalized SVG coordinates (0 to 1000)
+                        const leftMargin = 16;
+                        const rightMargin = 120; // room for HTML price badges
+                        const topMargin = 28;
+                        const botMargin = 52; // room for calendar dates on X-axis
+                        const plotW = 1000 - leftMargin - rightMargin;
+                        const plotH = 1000 - topMargin - botMargin;
+                        const bottomY = topMargin + plotH;
+
+                        const getX = (idx: number) => leftMargin + (idx / Math.max(1, drawPts.length - 1)) * plotW;
+
+                        // Equity Y scale
+                        const diff = maxEqRaw - minEqRaw || 1000;
+                        const padding = diff * 0.12;
+                        const yMin = minEqRaw - padding;
+                        const yMax = maxEqRaw + padding;
+                        const yRange = yMax - yMin;
+                        const getEquityY = (val: number) => topMargin + plotH * (1 - (val - yMin) / yRange);
+
+                        // Drawdown Y scale (0% at top, -maxDdPct at bottom)
+                        const getDrawdownY = (ddPct: number) => topMargin + plotH * (Math.abs(ddPct) / maxDdPct);
+
+                        // Active Y function depending on mode
+                        const getY = (p: (typeof pts)[0]) =>
+                          equityChartMode === 'equity' ? getEquityY(p.equity) : getDrawdownY(p.drawdownPercent);
+
+                        const baselineY = equityChartMode === 'equity' ? getEquityY(initCap) : getDrawdownY(0);
+                        const isProfitable = backtestReport.netProfit >= 0;
+
+                        // Calculate Real Calendar Date Ticks for X-Axis
+                        const numTicks = 6;
+                        const dateTicks: { idx: number; time: number; label: string; x: number }[] = [];
+                        for (let k = 0; k < numTicks; k++) {
+                          const frac = k / (numTicks - 1);
+                          const targetTime = startTime + frac * totalSpanMs;
+                          let closestIdx = 0;
+                          let minDiff = Infinity;
+                          for (let i = 0; i < drawPts.length; i++) {
+                            const d = Math.abs(drawPts[i].time - targetTime);
+                            if (d < minDiff) {
+                              minDiff = d;
+                              closestIdx = i;
                             }
-                            
-                            const diff = maxEqRaw - minEqRaw || 1000;
-                            // 12% padding so line and extreme points never clip
-                            const padding = diff * 0.12;
-                            const yMin = minEqRaw - padding;
-                            const yMax = maxEqRaw + padding;
-                            const yRange = yMax - yMin;
+                          }
+                          const tickTime = drawPts[closestIdx].time;
+                          const x = getX(closestIdx);
+                          const label = formatEquityDate(tickTime, totalSpanMs);
+                          dateTicks.push({ idx: closestIdx, time: tickTime, label, x });
+                        }
 
-                            // Normalized coordinates (0 to 1000)
-                            const leftMargin = 12;
-                            const rightMargin = 115; // room for HTML price badges
-                            const topMargin = 40;
-                            const botMargin = 75; // room for bottom timeline
-                            const plotW = 1000 - leftMargin - rightMargin;
-                            const plotH = 1000 - topMargin - botMargin;
-                            const bottomY = topMargin + plotH;
+                        // Calculate Running Peak Equity Curve (All-Time High line)
+                        let runPeak = initCap;
+                        const peakCurvePoints = drawPts
+                          .map((p, idx) => {
+                            if (p.equity > runPeak) runPeak = p.equity;
+                            return `${getX(idx).toFixed(1)},${getEquityY(runPeak).toFixed(1)}`;
+                          })
+                          .join(' ');
 
-                            const getY = (val: number) => topMargin + plotH * (1 - (val - yMin) / yRange);
+                        // SVG Polyline & Area Paths
+                        const polylinePoints = drawPts
+                          .map((p, idx) => `${getX(idx).toFixed(1)},${getY(p).toFixed(1)}`)
+                          .join(' ');
 
-                            // Safe downsampling for SVG (max ~1000 points so WebGL/DOM never lags)
-                            const step = Math.max(1, Math.floor(pts.length / 1000));
-                            const drawPts: typeof pts = [];
-                            for (let i = 0; i < pts.length; i += step) {
-                              drawPts.push(pts[i]);
+                        const areaPath =
+                          `M ${getX(0).toFixed(1)},${getY(drawPts[0]).toFixed(1)} ` +
+                          drawPts.map((p, idx) => `L ${getX(idx).toFixed(1)},${getY(p).toFixed(1)}`).join(' ') +
+                          ` L ${getX(drawPts.length - 1).toFixed(1)},${bottomY.toFixed(1)} L ${getX(0).toFixed(1)},${bottomY.toFixed(1)} Z`;
+
+                        // Sample Trade Markers on Equity Curve (Max 120 points for clarity)
+                        const tradeDots: { trade: Trade; x: number; y: number }[] = [];
+                        if (backtestReport.trades && backtestReport.trades.length > 0 && equityChartMode === 'equity') {
+                          const maxDots = 100;
+                          const sampleTrades =
+                            backtestReport.trades.length > maxDots
+                              ? backtestReport.trades.filter(
+                                  (_, i) => i % Math.ceil(backtestReport.trades.length / maxDots) === 0
+                                )
+                              : backtestReport.trades;
+
+                          for (const t of sampleTrades) {
+                            let closestIdx = 0;
+                            let minDiff = Infinity;
+                            for (let i = 0; i < drawPts.length; i++) {
+                              const d = Math.abs(drawPts[i].time - t.exitTime);
+                              if (d < minDiff) {
+                                minDiff = d;
+                                closestIdx = i;
+                              }
                             }
-                            if (drawPts[drawPts.length - 1] !== pts[pts.length - 1]) {
-                              drawPts.push(pts[pts.length - 1]);
-                            }
+                            tradeDots.push({
+                              trade: t,
+                              x: getX(closestIdx),
+                              y: getEquityY(drawPts[closestIdx].equity),
+                            });
+                          }
+                        }
 
-                            const getX = (idx: number) => leftMargin + (idx / Math.max(1, drawPts.length - 1)) * plotW;
+                        // Percentage positions for HTML Y-axis labels
+                        const maxPct = Math.max(4, Math.min(78, (getEquityY(maxEqRaw) / 1000) * 100));
+                        const basePct = Math.max(10, Math.min(84, (baselineY / 1000) * 100));
+                        const minPct = Math.max(16, Math.min(88, (getEquityY(minEqRaw) / 1000) * 100));
 
-                            const baselineY = getY(initCap);
-                            const isProfitable = backtestReport.netProfit >= 0;
+                        // Pointer movement handler for interactive crosshair & tooltip
+                        const handleEquityPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+                          if (!equityContainerRef.current || drawPts.length === 0) return;
+                          const rect = equityContainerRef.current.getBoundingClientRect();
+                          const mouseX = e.clientX - rect.left;
+                          const totalW = rect.width;
 
-                            const polylinePoints = drawPts.map((p, idx) => `${getX(idx).toFixed(1)},${getY(p.equity).toFixed(1)}`).join(' ');
-                            
-                            const areaPath = `M ${getX(0).toFixed(1)},${getY(drawPts[0].equity).toFixed(1)} ` +
-                              drawPts.map((p, idx) => `L ${getX(idx).toFixed(1)},${getY(p.equity).toFixed(1)}`).join(' ') +
-                              ` L ${getX(drawPts.length - 1).toFixed(1)},${bottomY.toFixed(1)} L ${getX(0).toFixed(1)},${bottomY.toFixed(1)} Z`;
+                          const leftPx = (leftMargin / 1000) * totalW;
+                          const plotPx = (plotW / 1000) * totalW;
+                          const normX = Math.max(0, Math.min(1, (mouseX - leftPx) / Math.max(1, plotPx)));
+                          const ptIndex = Math.round(normX * (drawPts.length - 1));
+                          const p = drawPts[ptIndex];
+                          if (!p) return;
 
-                            // Percentage positions for HTML badges (100% immune to SVG matrix squashing!)
-                            const maxPct = Math.max(5, Math.min(78, (getY(maxEqRaw) / 1000) * 100));
-                            const basePct = Math.max(12, Math.min(82, (baselineY / 1000) * 100));
-                            const minPct = Math.max(18, Math.min(88, (getY(minEqRaw) / 1000) * 100));
+                          const xPos = getX(ptIndex);
+                          const yPos = getY(p);
+                          const xPct = (xPos / 1000) * 100;
+                          const yPct = (yPos / 1000) * 100;
 
-                            return (
-                              <div className="w-full h-full relative">
-                                <svg className="w-full h-full block" viewBox="0 0 1000 1000" preserveAspectRatio="none">
-                                  <defs>
-                                    <linearGradient id="equityGradient" x1="0" y1="0" x2="0" y2="1">
-                                      <stop offset="0%" stopColor={isProfitable ? '#089981' : '#2962ff'} stopOpacity="0.28" />
-                                      <stop offset="100%" stopColor={isProfitable ? '#089981' : '#2962ff'} stopOpacity="0.0" />
-                                    </linearGradient>
-                                  </defs>
+                          // Find nearest trade within temporal proximity
+                          const nearestTrade = backtestReport.trades.find(
+                            (t) => Math.abs(t.exitTime - p.time) < 600000 // within 10m
+                          );
 
-                                  {/* Background Grid & Level Lines */}
-                                  <line x1={leftMargin} y1={getY(maxEqRaw)} x2={1000 - rightMargin} y2={getY(maxEqRaw)} stroke="#2a2e39" strokeDasharray="4,4" />
-                                  <line x1={leftMargin} y1={getY(minEqRaw)} x2={1000 - rightMargin} y2={getY(minEqRaw)} stroke="#2a2e39" strokeDasharray="4,4" />
+                          setEquityHover({
+                            time: p.time,
+                            equity: p.equity,
+                            drawdown: p.drawdown,
+                            drawdownPct: p.drawdownPercent,
+                            xPct,
+                            yPct,
+                            nearestTrade,
+                          });
+                        };
 
-                                  {/* Initial Capital Baseline */}
-                                  <line x1={leftMargin} y1={baselineY} x2={1000 - rightMargin} y2={baselineY} stroke="#787b86" strokeWidth="1.5" strokeDasharray="5,5" />
+                        return (
+                          <div className="h-full flex flex-col min-h-0">
+                            {/* 1. Header Toolbar with Mode Switcher, Milestones and Legend */}
+                            <div className="flex-shrink-0 flex flex-wrap justify-between items-center mb-1.5 px-1 text-xs gap-2">
+                              <div className="flex items-center space-x-2">
+                                {/* Mode Toggle: Equity vs Drawdown */}
+                                <div className="flex items-center bg-[#181d2a] p-0.5 rounded border border-[#2a3245] text-[11px]">
+                                  <button
+                                    onClick={() => setEquityChartMode('equity')}
+                                    className={`px-2.5 py-1 rounded font-semibold transition-all ${
+                                      equityChartMode === 'equity'
+                                        ? 'bg-blue-600 text-white shadow-sm'
+                                        : 'text-gray-400 hover:text-white'
+                                    }`}
+                                    title="Показать кривую роста баланса"
+                                  >
+                                    📈 Баланс (Equity)
+                                  </button>
+                                  <button
+                                    onClick={() => setEquityChartMode('drawdown')}
+                                    className={`px-2.5 py-1 rounded font-semibold transition-all ${
+                                      equityChartMode === 'drawdown'
+                                        ? 'bg-rose-600 text-white shadow-sm'
+                                        : 'text-gray-400 hover:text-white'
+                                    }`}
+                                    title="Показать подводный график просадок"
+                                  >
+                                    🔻 Просадка (Drawdown %)
+                                  </button>
+                                </div>
 
-                                  {/* Bottom Axis Border */}
-                                  <line x1={leftMargin} y1={bottomY} x2={1000 - rightMargin} y2={bottomY} stroke="#2a2e39" strokeWidth="1" />
+                                {/* Dynamic Hover Readout or Summary Metrics */}
+                                {equityHover ? (
+                                  <div className="flex items-center space-x-2 text-[11px] font-mono bg-[#162032] border border-blue-500/50 px-3 py-0.5 rounded text-blue-300 shadow-sm animate-fade-in">
+                                    <span className="text-gray-400">Точка:</span>
+                                    <span className="text-white font-bold">
+                                      {formatEquityDate(equityHover.time, totalSpanMs)}
+                                    </span>
+                                    <span>|</span>
+                                    <span className="text-gray-400">Баланс:</span>
+                                    <span className="text-white font-bold">
+                                      ${Math.round(equityHover.equity).toLocaleString()}
+                                    </span>
+                                    <span>|</span>
+                                    <span className="text-gray-400">Прибыль:</span>
+                                    <span
+                                      className={
+                                        equityHover.equity >= initCap
+                                          ? 'text-emerald-400 font-bold'
+                                          : 'text-rose-400 font-bold'
+                                      }
+                                    >
+                                      {equityHover.equity >= initCap ? '+' : ''}$
+                                      {Math.round(equityHover.equity - initCap).toLocaleString()}
+                                    </span>
+                                    <span>|</span>
+                                    <span className="text-gray-400">Просадка:</span>
+                                    <span className="text-rose-400 font-bold">
+                                      -${Math.round(equityHover.drawdown).toLocaleString()} (-
+                                      {equityHover.drawdownPct.toFixed(2)}%)
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <div className="hidden md:flex items-center space-x-2 text-[11px] font-mono text-gray-400">
+                                    <span>
+                                      Старт:{' '}
+                                      <strong className="text-gray-200">
+                                        ${backtestReport.initialCapital.toLocaleString()}
+                                      </strong>
+                                    </span>
+                                    <span>→</span>
+                                    <span>
+                                      Итог:{' '}
+                                      <strong
+                                        className={
+                                          backtestReport.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                        }
+                                      >
+                                        ${backtestReport.finalCapital.toLocaleString()} (
+                                        {backtestReport.netProfitPercent >= 0 ? '+' : ''}
+                                        {backtestReport.netProfitPercent.toFixed(1)}%)
+                                      </strong>
+                                    </span>
+                                    <span>|</span>
+                                    <span>
+                                      Пик (ATH):{' '}
+                                      <strong className="text-amber-400">
+                                        ${Math.round(maxEqRaw).toLocaleString()}
+                                      </strong>
+                                    </span>
+                                    <span>|</span>
+                                    <span>
+                                      Макс. просадка:{' '}
+                                      <strong className="text-rose-400">
+                                        -${Math.round(backtestReport.maxDrawdown).toLocaleString()} (-
+                                        {backtestReport.maxDrawdownPercent.toFixed(2)}%)
+                                      </strong>
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
 
-                                  {/* Gradient Fill Area */}
-                                  <path d={areaPath} fill="url(#equityGradient)" />
+                              {/* Visual Legend */}
+                              <div className="flex items-center space-x-3 text-[10px] font-mono text-gray-400">
+                                <span className="flex items-center space-x-1.5">
+                                  <span className="w-2.5 h-0.5 bg-blue-500 rounded-full inline-block" />
+                                  <span>Кривая баланса</span>
+                                </span>
+                                {equityChartMode === 'equity' && (
+                                  <span className="flex items-center space-x-1.5" title="All-Time High (Линия пика)">
+                                    <span className="w-2.5 h-0.5 bg-amber-400 border-b border-dashed border-amber-400 inline-block" />
+                                    <span>Пик (ATH)</span>
+                                  </span>
+                                )}
+                                <span className="flex items-center space-x-1.5">
+                                  <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
+                                  <span>Победы (TP)</span>
+                                </span>
+                                <span className="flex items-center space-x-1.5">
+                                  <span className="w-2 h-2 rounded-full bg-rose-400 inline-block" />
+                                  <span>Сливы / Убытки (SL)</span>
+                                </span>
+                              </div>
+                            </div>
 
-                                  {/* Main Equity Polyline */}
+                            {/* 2. Interactive SVG Canvas */}
+                            <div
+                              ref={equityContainerRef}
+                              onPointerMove={handleEquityPointerMove}
+                              onPointerLeave={() => setEquityHover(null)}
+                              className="flex-1 w-full bg-[#141722] rounded border border-[#2a2e39] relative min-h-0 overflow-hidden cursor-crosshair select-none"
+                            >
+                              <svg className="w-full h-full block" viewBox="0 0 1000 1000" preserveAspectRatio="none">
+                                <defs>
+                                  {/* Equity Gradient */}
+                                  <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop
+                                      offset="0%"
+                                      stopColor={isProfitable ? '#089981' : '#2962ff'}
+                                      stopOpacity="0.3"
+                                    />
+                                    <stop
+                                      offset="100%"
+                                      stopColor={isProfitable ? '#089981' : '#2962ff'}
+                                      stopOpacity="0.0"
+                                    />
+                                  </linearGradient>
+
+                                  {/* Drawdown Gradient */}
+                                  <linearGradient id="drawdownGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.05" />
+                                    <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.38" />
+                                  </linearGradient>
+                                </defs>
+
+                                {/* Vertical Date Grid Lines corresponding to real calendar dates */}
+                                {dateTicks.map((tick, i) => (
+                                  <line
+                                    key={`vgrid-${i}`}
+                                    x1={tick.x}
+                                    y1={topMargin}
+                                    x2={tick.x}
+                                    y2={bottomY}
+                                    stroke="#202534"
+                                    strokeDasharray="4,4"
+                                    strokeWidth="1"
+                                  />
+                                ))}
+
+                                {/* Horizontal Reference Grid Lines */}
+                                {equityChartMode === 'equity' ? (
+                                  <>
+                                    <line
+                                      x1={leftMargin}
+                                      y1={getEquityY(maxEqRaw)}
+                                      x2={1000 - rightMargin}
+                                      y2={getEquityY(maxEqRaw)}
+                                      stroke="#252b3b"
+                                      strokeDasharray="3,3"
+                                    />
+                                    <line
+                                      x1={leftMargin}
+                                      y1={getEquityY(minEqRaw)}
+                                      x2={1000 - rightMargin}
+                                      y2={getEquityY(minEqRaw)}
+                                      stroke="#252b3b"
+                                      strokeDasharray="3,3"
+                                    />
+                                    {/* Initial Capital Baseline (0% reference) */}
+                                    <line
+                                      x1={leftMargin}
+                                      y1={baselineY}
+                                      x2={1000 - rightMargin}
+                                      y2={baselineY}
+                                      stroke="#4b5563"
+                                      strokeWidth="1.5"
+                                      strokeDasharray="6,4"
+                                    />
+                                  </>
+                                ) : (
+                                  <>
+                                    {/* Drawdown 0% Top Line */}
+                                    <line
+                                      x1={leftMargin}
+                                      y1={baselineY}
+                                      x2={1000 - rightMargin}
+                                      y2={baselineY}
+                                      stroke="#10b981"
+                                      strokeWidth="1.5"
+                                    />
+                                    <line
+                                      x1={leftMargin}
+                                      y1={getDrawdownY(backtestReport.maxDrawdownPercent)}
+                                      x2={1000 - rightMargin}
+                                      y2={getDrawdownY(backtestReport.maxDrawdownPercent)}
+                                      stroke="#f43f5e"
+                                      strokeWidth="1.2"
+                                      strokeDasharray="4,4"
+                                    />
+                                  </>
+                                )}
+
+                                {/* Bottom Timeline Border */}
+                                <line
+                                  x1={leftMargin}
+                                  y1={bottomY}
+                                  x2={1000 - rightMargin}
+                                  y2={bottomY}
+                                  stroke="#2a2e39"
+                                  strokeWidth="1"
+                                />
+
+                                {/* Area Fill */}
+                                <path
+                                  d={areaPath}
+                                  fill={equityChartMode === 'equity' ? 'url(#equityGrad)' : 'url(#drawdownGrad)'}
+                                />
+
+                                {/* Running Peak (ATH) Dashed Line in Equity Mode */}
+                                {equityChartMode === 'equity' && (
                                   <polyline
                                     fill="none"
-                                    stroke={isProfitable ? '#089981' : '#2962ff'}
-                                    strokeWidth="2.5"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                    points={polylinePoints}
+                                    stroke="#f59e0b"
+                                    strokeWidth="1.5"
+                                    strokeDasharray="4,4"
+                                    opacity="0.5"
+                                    points={peakCurvePoints}
                                   />
+                                )}
 
-                                  {/* Start & End Points */}
-                                  <circle cx={getX(0)} cy={getY(drawPts[0].equity)} r="4" fill="#2962ff" />
-                                  <circle cx={getX(drawPts.length - 1)} cy={getY(drawPts[drawPts.length - 1].equity)} r="5" fill={isProfitable ? '#089981' : '#f23645'} stroke="#ffffff" strokeWidth="1.5" />
-                                </svg>
+                                {/* Main Curve Polyline */}
+                                <polyline
+                                  fill="none"
+                                  stroke={
+                                    equityChartMode === 'equity'
+                                      ? isProfitable
+                                        ? '#089981'
+                                        : '#2962ff'
+                                      : '#f43f5e'
+                                  }
+                                  strokeWidth="2.5"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  points={polylinePoints}
+                                />
 
-                                {/* Y-Axis Right Labels: Crisp HTML text (Never squashed, 100% legible!) */}
-                                <div
-                                  className="text-[10px] font-mono font-bold text-emerald-400 pointer-events-none select-none whitespace-nowrap"
-                                  style={{ position: 'absolute', right: '14px', top: `${maxPct.toFixed(1)}%`, transform: 'translateY(-50%)' }}
-                                >
-                                  ${Math.round(maxEqRaw).toLocaleString()}
-                                </div>
-                                <div
-                                  className="text-[10px] font-mono font-bold text-white pointer-events-none select-none whitespace-nowrap"
-                                  style={{ position: 'absolute', right: '14px', top: `${basePct.toFixed(1)}%`, transform: 'translateY(-50%)' }}
-                                >
-                                  ${initCap.toLocaleString()} (0%)
-                                </div>
-                                <div
-                                  className="text-[10px] font-mono font-bold text-rose-400 pointer-events-none select-none whitespace-nowrap"
-                                  style={{ position: 'absolute', right: '14px', top: `${minPct.toFixed(1)}%`, transform: 'translateY(-50%)' }}
-                                >
-                                  ${Math.round(minEqRaw).toLocaleString()}
-                                </div>
+                                {/* Trade Dots along the curve: Green for Wins, Red for Losses */}
+                                {tradeDots.map((td, i) => (
+                                  <circle
+                                    key={`td-${i}`}
+                                    cx={td.x}
+                                    cy={td.y}
+                                    r={td.trade.pnl > 0 ? 3 : 3}
+                                    fill={td.trade.pnl > 0 ? '#10b981' : '#f43f5e'}
+                                    stroke="#141722"
+                                    strokeWidth="1"
+                                    opacity="0.85"
+                                  />
+                                ))}
 
-                                {/* X-Axis Timeline Milestones: Crisp HTML text */}
-                                <div
-                                  className="flex items-center justify-between text-[10px] font-mono text-gray-500 pointer-events-none select-none"
-                                  style={{ position: 'absolute', bottom: '6px', left: '14px', right: '120px' }}
-                                >
-                                  <span>Start</span>
-                                  <span>25%</span>
-                                  <span>50% ({Math.round(pts.length * 0.5)} bars)</span>
-                                  <span>75%</span>
-                                  <span>Latest</span>
-                                </div>
+                                {/* Start & End Points */}
+                                <circle
+                                  cx={getX(0)}
+                                  cy={getY(drawPts[0])}
+                                  r="4"
+                                  fill="#2962ff"
+                                  stroke="#ffffff"
+                                  strokeWidth="1"
+                                />
+                                <circle
+                                  cx={getX(drawPts.length - 1)}
+                                  cy={getY(drawPts[drawPts.length - 1])}
+                                  r="5"
+                                  fill={
+                                    equityChartMode === 'equity'
+                                      ? isProfitable
+                                        ? '#089981'
+                                        : '#f43f5e'
+                                      : '#f43f5e'
+                                  }
+                                  stroke="#ffffff"
+                                  strokeWidth="1.5"
+                                />
+
+                                {/* Interactive Crosshair Lines in SVG */}
+                                {equityHover && (
+                                  <>
+                                    <line
+                                      x1={equityHover.xPct * 10}
+                                      y1={topMargin}
+                                      x2={equityHover.xPct * 10}
+                                      y2={bottomY}
+                                      stroke="#3b82f6"
+                                      strokeWidth="1.2"
+                                      strokeDasharray="3,3"
+                                    />
+                                    <line
+                                      x1={leftMargin}
+                                      y1={equityHover.yPct * 10}
+                                      x2={1000 - rightMargin}
+                                      y2={equityHover.yPct * 10}
+                                      stroke="#3b82f6"
+                                      strokeWidth="1.2"
+                                      strokeDasharray="3,3"
+                                    />
+                                    <circle
+                                      cx={equityHover.xPct * 10}
+                                      cy={equityHover.yPct * 10}
+                                      r="6"
+                                      fill="#3b82f6"
+                                      stroke="#ffffff"
+                                      strokeWidth="2"
+                                    />
+                                  </>
+                                )}
+                              </svg>
+
+                              {/* 3. Right Y-Axis Value Badges */}
+                              {equityChartMode === 'equity' ? (
+                                <>
+                                  <div
+                                    className="text-[10px] font-mono font-bold text-emerald-400 pointer-events-none select-none whitespace-nowrap"
+                                    style={{
+                                      position: 'absolute',
+                                      right: '12px',
+                                      top: `${maxPct.toFixed(1)}%`,
+                                      transform: 'translateY(-50%)',
+                                    }}
+                                  >
+                                    ${Math.round(maxEqRaw).toLocaleString()}
+                                  </div>
+                                  <div
+                                    className="text-[10px] font-mono font-bold text-gray-300 pointer-events-none select-none whitespace-nowrap bg-[#181d2a] px-1 py-0.5 rounded border border-[#2b3345]"
+                                    style={{
+                                      position: 'absolute',
+                                      right: '12px',
+                                      top: `${basePct.toFixed(1)}%`,
+                                      transform: 'translateY(-50%)',
+                                    }}
+                                  >
+                                    ${initCap.toLocaleString()} (0%)
+                                  </div>
+                                  <div
+                                    className="text-[10px] font-mono font-bold text-rose-400 pointer-events-none select-none whitespace-nowrap"
+                                    style={{
+                                      position: 'absolute',
+                                      right: '12px',
+                                      top: `${minPct.toFixed(1)}%`,
+                                      transform: 'translateY(-50%)',
+                                    }}
+                                  >
+                                    ${Math.round(minEqRaw).toLocaleString()}
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div
+                                    className="text-[10px] font-mono font-bold text-emerald-400 pointer-events-none select-none whitespace-nowrap"
+                                    style={{
+                                      position: 'absolute',
+                                      right: '12px',
+                                      top: `${((topMargin / 1000) * 100).toFixed(1)}%`,
+                                      transform: 'translateY(-50%)',
+                                    }}
+                                  >
+                                    0.00% (Пик)
+                                  </div>
+                                  <div
+                                    className="text-[10px] font-mono font-bold text-rose-400 pointer-events-none select-none whitespace-nowrap"
+                                    style={{
+                                      position: 'absolute',
+                                      right: '12px',
+                                      top: `${((getDrawdownY(backtestReport.maxDrawdownPercent) / 1000) * 100).toFixed(
+                                        1
+                                      )}%`,
+                                      transform: 'translateY(-50%)',
+                                    }}
+                                  >
+                                    -{backtestReport.maxDrawdownPercent.toFixed(2)}% (Макс.)
+                                  </div>
+                                </>
+                              )}
+
+                              {/* 4. Bottom X-Axis Real Calendar Dates (Strictly aligned with vertical grid lines) */}
+                              <div
+                                className="absolute bottom-1.5 text-[11px] font-mono select-none pointer-events-none"
+                                style={{
+                                  left: `${(leftMargin / 1000) * 100}%`,
+                                  right: `${(rightMargin / 1000) * 100}%`,
+                                }}
+                              >
+                                {dateTicks.map((tick, i) => {
+                                  const relPct = ((tick.x - leftMargin) / plotW) * 100;
+                                  return (
+                                    <div
+                                      key={`dtick-${i}`}
+                                      className="absolute whitespace-nowrap text-gray-300 font-semibold text-[10px] tracking-wide"
+                                      style={{
+                                        left: `${relPct.toFixed(2)}%`,
+                                        transform:
+                                          i === 0
+                                            ? 'translateX(0%)'
+                                            : i === dateTicks.length - 1
+                                            ? 'translateX(-100%)'
+                                            : 'translateX(-50%)',
+                                      }}
+                                    >
+                                      <span>{tick.label}</span>
+                                    </div>
+                                  );
+                                })}
                               </div>
-                            );
-                          })()
-                        ) : (
-                          <div className="flex-1 flex items-center justify-center text-gray-500 text-xs">
-                            Awaiting bar evaluation...
+
+                              {/* 5. Floating Interactive Tooltip Card */}
+                              {equityHover && (
+                                <div
+                                  className="absolute z-20 pointer-events-none bg-[#141824]/95 backdrop-blur-md border border-blue-500/50 rounded-lg p-2.5 shadow-2xl text-xs font-sans min-w-[230px]"
+                                  style={{
+                                    left: `${Math.min(74, Math.max(8, equityHover.xPct))}%`,
+                                    top: `${Math.max(6, Math.min(68, equityHover.yPct - 12))}%`,
+                                    transform: 'translate(-50%, -100%)',
+                                  }}
+                                >
+                                  <div className="text-[11px] text-gray-200 font-bold border-b border-[#252c3e] pb-1 mb-1.5 flex items-center justify-between">
+                                    <span>📅 {formatEquityFullDate(equityHover.time)}</span>
+                                    {equityHover.equity >= initCap ? (
+                                      <span className="text-emerald-400 text-[10px] font-bold px-1 rounded bg-emerald-950/60 border border-emerald-500/40">
+                                        В ПРИБЫЛИ
+                                      </span>
+                                    ) : (
+                                      <span className="text-rose-400 text-[10px] font-bold px-1 rounded bg-rose-950/60 border border-rose-500/40">
+                                        В УБЫТКЕ
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="space-y-1 font-mono text-[11px]">
+                                    <div className="flex justify-between">
+                                      <span className="text-gray-400">Баланс (Equity):</span>
+                                      <span className="font-bold text-white">
+                                        ${Math.round(equityHover.equity).toLocaleString()}
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-gray-400">Прибыль от старта:</span>
+                                      <span
+                                        className={
+                                          equityHover.equity >= initCap
+                                            ? 'text-emerald-400 font-bold'
+                                            : 'text-rose-400 font-bold'
+                                        }
+                                      >
+                                        {equityHover.equity >= initCap ? '+' : ''}$
+                                        {Math.round(equityHover.equity - initCap).toLocaleString()} (
+                                        {(((equityHover.equity - initCap) / initCap) * 100).toFixed(2)}%)
+                                      </span>
+                                    </div>
+                                    <div className="flex justify-between">
+                                      <span className="text-gray-400">Просадка от пика:</span>
+                                      <span
+                                        className={
+                                          equityHover.drawdown > 0 ? 'text-rose-400 font-semibold' : 'text-gray-400'
+                                        }
+                                      >
+                                        {equityHover.drawdown > 0
+                                          ? `-$${Math.round(
+                                              equityHover.drawdown
+                                            ).toLocaleString()} (-${equityHover.drawdownPct.toFixed(2)}%)`
+                                          : '$0.00 (Новый ATH)'}
+                                      </span>
+                                    </div>
+                                    {equityHover.nearestTrade && (
+                                      <div className="mt-1.5 pt-1.5 border-t border-[#252c3e] text-[10px] text-blue-300">
+                                        ⚡ Сделка #{equityHover.nearestTrade.id}:{' '}
+                                        <strong>{equityHover.nearestTrade.type.toUpperCase()}</strong>{' '}
+                                        <span
+                                          className={
+                                            equityHover.nearestTrade.pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                          }
+                                        >
+                                          {equityHover.nearestTrade.pnl >= 0 ? '+' : ''}$
+                                          {equityHover.nearestTrade.pnl.toLocaleString()}
+                                        </span>{' '}
+                                        ({equityHover.nearestTrade.exitReason})
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </div>
+                        );
+                      })()}
                     </div>
                   )}
 
